@@ -36,6 +36,12 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.time.LocalDate
+import java.time.DayOfWeek
+import java.time.Duration
+import java.time.Instant
+import java.time.LocalTime
+import java.time.ZoneId
+import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 
 private val Ink = Color(0xFF19332D)
@@ -196,12 +202,17 @@ fun App(db: LotteryDatabase) {
                                 val result = withContext(Dispatchers.IO) { runCatching {
                                     val frontMin = if (filters?.sum != null) filters.sum.first else Int.MIN_VALUE
                                     val frontMax = if (filters?.sum != null) filters.sum.last else Int.MAX_VALUE
-                                    val candidates = LotteryEngine.generateForGame(draws, 40, years, "AI集成", selectedGame,
-                                        sumRange = frontMin..frontMax,
-                                        oddRange = filters?.odd ?: 0..6,
-                                        bigRange = filters?.big ?: 0..6,
-                                        maxConsecutivePairs = filters?.maxRuns ?: 5,
-                                        candidatePoolMultiplier = 4)
+                                    val candidates = buildList {
+                                        repeat(4) { batch ->
+                                            addAll(LotteryEngine.generateForGame(draws, 10, years, "AI集成", selectedGame,
+                                                sumRange = frontMin..frontMax,
+                                                oddRange = filters?.odd ?: 0..6,
+                                                bigRange = filters?.big ?: 0..6,
+                                                maxConsecutivePairs = filters?.maxRuns ?: 5,
+                                                candidatePoolMultiplier = 4,
+                                                seed = System.nanoTime() + batch * 104_729L))
+                                        }
+                                    }.distinctBy { it.reds.joinToString(",") + "+" + it.secondary.joinToString(",") }
                                     DoubaoLotteryClient.generate(selectedGame, history, candidates, amount, years, mode, doubaoModelId, doubaoApiKey)
                                 } }
                                 result.onSuccess { picked -> smartTickets = picked.tickets; doubaoReason = picked.reasoning; doubaoMessage = "豆包选号完成 · ${picked.tickets.size} 组" }
@@ -414,8 +425,9 @@ private fun GameDataNotice(game: LotteryGame) {
 private fun Home(draws: List<Draw>, gameDraws: List<GameDraw>, pinned: Ticket?, quick: List<Ticket>, years: Int, amount: Int, mode: String, game: LotteryGame, themeIndex: Int,
                  setYears: (Int) -> Unit, setAmount: (Int) -> Unit, setMode: (String) -> Unit,
                  generate: () -> Unit, syncTime: String, setGame: (String) -> Unit, setTheme: (Int) -> Unit) {
-    val latestDate = if (game.code == "ssq") draws.firstOrNull()?.date.orEmpty() else gameDraws.firstOrNull()?.date.orEmpty()
-    val (_, nextDate) = drawCalendar(latestDate)
+    var clockNow by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(game.code) { while (true) { clockNow = System.currentTimeMillis(); delay(1000) } }
+    val countdown = remember(game.code, clockNow) { lotteryCountdown(game, clockNow) }
     PageScroll {
         Header("彩票智析", "统计模型参考 · ${game.name}", syncTime)
         CardBox {
@@ -431,8 +443,17 @@ private fun Home(draws: List<Draw>, gameDraws: List<GameDraw>, pinned: Ticket?, 
         }
         CardBox {
             Label("${game.name} · 开奖信息")
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text("下一期开奖", color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                Text(countdown.drawAt.format(DateTimeFormatter.ofPattern("M月d日 E HH:mm:ss", java.util.Locale.CHINA)), color = Green, fontSize = 12.sp)
+            }
+            Text("距离开奖  ${formatCountdown(countdown.secondsToDraw)}", color = Green, fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp))
+            Row(Modifier.fillMaxWidth().padding(top = 5.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text("销售截止 ${countdown.saleCutoff.format(DateTimeFormatter.ofPattern("M月d日 HH:mm:ss", java.util.Locale.CHINA))}", color = Muted, fontSize = 11.sp)
+                Text(if (countdown.secondsToSale == 0L) "本期销售已截止" else "剩余 ${formatCountdown(countdown.secondsToSale)}", color = if (countdown.secondsToSale == 0L) Red else Amber, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+            }
+            Text("按常规开奖日历计算，休市及特别安排以官方公告为准。", color = Muted, fontSize = 10.sp, modifier = Modifier.padding(top = 4.dp))
             if ((game.code == "ssq" && draws.isNotEmpty()) || (game.code != "ssq" && gameDraws.isNotEmpty())) {
-                Text("${game.name}开奖信息 · 下期开奖日：$nextDate", color = Green, fontSize = 13.sp)
                 val drawDate = if (game.code == "ssq") draws.first().date else gameDraws.first().date
                 val drawIssue = if (game.code == "ssq") draws.first().issue else gameDraws.first().issue
                 HorizontalDivider(Modifier.padding(vertical = 12.dp), color = Color(0xFFEDF1EE))
@@ -710,6 +731,40 @@ private fun Smart(draws: List<Draw>, gameDraws: List<GameDraw>, years: Int, amou
     }
 }
 
+private data class DrawCountdown(val drawAt: ZonedDateTime, val saleCutoff: ZonedDateTime, val secondsToDraw: Long, val secondsToSale: Long)
+
+private fun lotteryCountdown(game: LotteryGame, nowMillis: Long): DrawCountdown {
+    val zone = ZoneId.of("Asia/Shanghai")
+    val now = Instant.ofEpochMilli(nowMillis).atZone(zone)
+    val (days, cutoffTime, drawTime) = when (game.code) {
+        "ssq" -> Triple(setOf(DayOfWeek.TUESDAY, DayOfWeek.THURSDAY, DayOfWeek.SUNDAY), LocalTime.of(20, 0), LocalTime.of(21, 15))
+        "dlt" -> Triple(setOf(DayOfWeek.MONDAY, DayOfWeek.WEDNESDAY, DayOfWeek.SATURDAY), LocalTime.of(21, 0), LocalTime.of(21, 25))
+        else -> Triple(DayOfWeek.values().toSet(), LocalTime.of(if (game.code == "fc3d") 20 else 21, 0), LocalTime.of(21, if (game.code == "fc3d") 15 else 25))
+    }
+    for (offset in 0L..8L) {
+        val date = now.toLocalDate().plusDays(offset)
+        if (date.dayOfWeek !in days) continue
+        val drawAt = ZonedDateTime.of(date, drawTime, zone)
+        if (!drawAt.isAfter(now)) continue
+        val saleCutoff = ZonedDateTime.of(date, cutoffTime, zone)
+        val toDraw = Duration.between(now, drawAt).seconds.coerceAtLeast(0)
+        val toSale = if (now.isBefore(saleCutoff)) Duration.between(now, saleCutoff).seconds.coerceAtLeast(0) else 0L
+        return DrawCountdown(drawAt, saleCutoff, toDraw, toSale)
+    }
+    val fallback = ZonedDateTime.of(now.toLocalDate().plusDays(1), drawTime, zone)
+    val cutoff = ZonedDateTime.of(fallback.toLocalDate(), cutoffTime, zone)
+    return DrawCountdown(fallback, cutoff, Duration.between(now, fallback).seconds.coerceAtLeast(0), Duration.between(now, cutoff).seconds.coerceAtLeast(0))
+}
+
+private fun formatCountdown(seconds: Long): String {
+    val safe = seconds.coerceAtLeast(0)
+    val days = safe / 86_400
+    val hours = safe % 86_400 / 3_600
+    val minutes = safe % 3_600 / 60
+    val secs = safe % 60
+    return "%02d天 %02d:%02d:%02d".format(days, hours, minutes, secs)
+}
+
 private fun drawCalendar(latestDate: String): Pair<String, String> {
     if (latestDate.isBlank()) return "" to "待同步"
     return runCatching {
@@ -727,3 +782,4 @@ private fun parseTicket(value: String): Ticket? = runCatching {
     val secondary = parts.getOrNull(4)?.takeIf { it.isNotBlank() }?.split(',')?.map(String::toInt) ?: listOf(blue)
     Ticket(parts[0].split(',').map(String::toInt), blue, parts[2].toInt(), gameCode, secondary)
 }.getOrNull()
+
