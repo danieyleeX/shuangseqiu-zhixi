@@ -47,8 +47,8 @@ private val Blue = Color(0xFF4B83D7)
 private val Amber = Color(0xFFE3B45E)
 private val ModelOptions = listOf("AI集成", "综合模型", "近期趋势", "热号优先", "冷热搭配", "遗漏反转", "均衡型", "分区均衡")
 private val ThemePalette = listOf(
-    "玫红" to Color(0xFFD94372), "珊瑚" to Color(0xFFEF665E), "琥珀" to Color(0xFFD49735),
-    "森绿" to Color(0xFF328B6D), "晴蓝" to Color(0xFF4D78C8), "薰紫" to Color(0xFF855EB6)
+    "玫粉" to Color(0xFFE89AB4), "蜜桃" to Color(0xFFF2A99E), "奶杏" to Color(0xFFE8C58C),
+    "薄荷" to Color(0xFF91C8B0), "浅蓝" to Color(0xFF91B6E3), "薰衣草" to Color(0xFFB4A0D5)
 )
 private data class TicketFilters(val sum: IntRange, val odd: IntRange, val big: IntRange, val maxRuns: Int)
 
@@ -79,13 +79,15 @@ fun App(db: LotteryDatabase) {
     var homeQuick by remember { mutableStateOf<List<Ticket>>(emptyList()) }
     var smartTickets by remember { mutableStateOf<List<Ticket>>(emptyList()) }
     var draws by remember { mutableStateOf(db.readAll()) }
+    var gameDraws by remember(selectedGameCode) { mutableStateOf(db.readGame(selectedGameCode)) }
     var syncing by remember { mutableStateOf(false) }
     var syncMessage by remember { mutableStateOf("") }
     var syncTime by remember { mutableStateOf(context.getSharedPreferences("sync", 0).getString("last_ok", null).orEmpty()) }
     val historyScroll = rememberScrollState()
-    val pinnedTicket = remember(draws, selectedGameCode) {
-        if (draws.isEmpty()) null else {
-            val pinnedKey = "pinned_ai_candidate_${selectedGame.code}_${draws.first().issue}"
+    val pinnedTicket = remember(draws, gameDraws, selectedGameCode) {
+        val latestIssue = if (selectedGame.code == "ssq") draws.firstOrNull()?.issue else gameDraws.firstOrNull()?.issue
+        if (latestIssue == null) null else {
+            val pinnedKey = "pinned_ai_candidate_${selectedGame.code}_$latestIssue"
             val saved = prefs.getString(pinnedKey, null)
             val restored = saved?.let(::parseTicket)
             restored ?: LotteryEngine.generateForGame(draws, 1, 1, "AI集成", selectedGame, candidatePoolMultiplier = 250).first().also { ticket ->
@@ -97,11 +99,12 @@ fun App(db: LotteryDatabase) {
     fun sync() {
         if (syncing) return
         syncing = true
-        syncMessage = "正在连接中国福彩网…"
+        syncMessage = "正在同步各彩种官方开奖数据…"
         scope.launch {
             val result = withContext(Dispatchers.IO) { runCatching { OfficialDrawSync(db).syncLatest() } }
             result.onSuccess { updated ->
                 draws = db.readAll()
+                gameDraws = db.readGame(selectedGameCode)
                 syncTime = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.CHINA).format(java.util.Date())
                 context.getSharedPreferences("sync", 0).edit().putString("last_ok", syncTime).apply()
                 val success = "同步成功 · 更新 $updated 期"
@@ -158,13 +161,13 @@ fun App(db: LotteryDatabase) {
         ) { inset ->
             Box(Modifier.fillMaxSize().background(CanvasBg).padding(inset)) {
                 when (page) {
-                    0 -> Home(draws, pinnedTicket, homeQuick, years, amount, mode, selectedGame, themeIndex,
+                    0 -> Home(draws, gameDraws, pinnedTicket, homeQuick, years, amount, mode, selectedGame, themeIndex,
                         { years = it }, { amount = it }, { mode = it },
                         { homeQuick = LotteryEngine.generateForGame(draws, amount, years, mode, selectedGame) }, syncTime,
-                        { code -> selectedGameCode = code; prefs.edit().putString("selected_game", code).apply(); homeQuick = emptyList(); smartTickets = emptyList() },
+                        { code -> selectedGameCode = code; gameDraws = db.readGame(code); prefs.edit().putString("selected_game", code).apply(); homeQuick = emptyList(); smartTickets = emptyList() },
                         { index -> themeIndex = index; prefs.edit().putInt("theme_index", index).apply() })
-                    1 -> if (selectedGame.code == "ssq") Analysis(draws, years, { years = it }) else GameDataNotice(selectedGame)
-                    2 -> if (selectedGame.code == "ssq") History(draws, syncing, syncMessage, syncTime, ::sync, historyScroll) else GameDataNotice(selectedGame)
+                    1 -> if (selectedGame.code == "ssq") Analysis(draws, years, { years = it }) else GameAnalysis(selectedGame, gameDraws)
+                    2 -> if (selectedGame.code == "ssq") History(draws, syncing, syncMessage, syncTime, ::sync, historyScroll) else GameHistory(selectedGame, gameDraws, syncing, syncMessage, syncTime, ::sync, historyScroll)
                     else -> Smart(draws, years, amount, mode, selectedGame, { years = it }, { amount = it }, { mode = it },
                         { smartTickets = LotteryEngine.generateForGame(draws, amount, years, mode, selectedGame) },
                         { filters -> smartTickets = LotteryEngine.generateForGame(draws, amount, years, mode, selectedGame, sumRange = filters.sum, oddRange = filters.odd, bigRange = filters.big, maxConsecutivePairs = filters.maxRuns) },
@@ -243,9 +246,66 @@ private fun ChipRow(values: List<String>, selected: String, choose: (String) -> 
         values.forEach { value ->
             val active = value == selected
             Text(value, modifier = Modifier.border(1.dp, if (active) Green else Color(0xFFE4EBE6), RoundedCornerShape(50))
-                .background(if (active) Color(0xFFE5F3ED) else Color.White, RoundedCornerShape(50))
+                .background(if (active) Green.copy(alpha = .20f) else Color.White, RoundedCornerShape(50))
                 .clickable { choose(value) }.padding(horizontal = 14.dp, vertical = 9.dp),
                 color = if (active) Green else Muted, fontSize = 13.sp, fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal)
+        }
+    }
+}
+
+@Composable
+private fun GameDrawNumbers(draw: GameDraw, game: LotteryGame) {
+    if (game.backCount > 0) Numbers(draw.front, draw.back.firstOrNull() ?: 0, true, draw.back)
+    else Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) { draw.front.forEach { Ball(it, Red, true) } }
+}
+
+@Composable
+private fun GameAnalysis(game: LotteryGame, draws: List<GameDraw>) {
+    PageScroll {
+        Header("${game.name}数据分析", "${draws.size} 期官方历史数据")
+        if (draws.isEmpty()) CardBox { Text("尚无本彩种历史数据，请点击历史数据页的同步按钮。", color = Muted) }
+        else {
+            val counts = IntArray(game.frontMax + 1)
+            draws.forEach { d -> d.front.forEach { if (it in counts.indices) counts[it]++ } }
+            CardBox {
+                Label("号码出现频率排行榜")
+                counts.indices.drop(1).sortedByDescending { counts[it] }.take(minOf(10, game.frontMax)).forEachIndexed { i, n ->
+                    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("${i + 1}. ${if (game.digits) n.toString() else "%02d".format(n)}", color = Ink)
+                        Text("${counts[n]} 次", color = Green)
+                    }
+                }
+            }
+            CardBox {
+                Label("近期开奖结构")
+                val recent = draws.take(30)
+                Text("近${recent.size}期平均和值：${"%.1f".format(recent.map { it.front.sum() }.average())}", color = Ink)
+                Text("近${recent.size}期平均跨度：${"%.1f".format(recent.map { (it.front.maxOrNull() ?: 0) - (it.front.minOrNull() ?: 0) }.average())}", color = Ink, modifier = Modifier.padding(top = 8.dp))
+                Text("奇偶比例、和值、跨度均为历史描述统计，不代表未来概率。", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 10.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun GameHistory(game: LotteryGame, draws: List<GameDraw>, syncing: Boolean, syncMessage: String, syncTime: String, sync: () -> Unit, scroll: androidx.compose.foundation.ScrollState) {
+    Column(Modifier.fillMaxSize().verticalScroll(scroll).padding(bottom = 24.dp)) {
+        Header("${game.name}历史数据", "${draws.size} 期 · 官方来源", syncTime)
+        CardBox {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Column { Label("官方数据同步"); Text(if (syncMessage.isBlank()) "数据更新 · ${syncTime.ifBlank { "尚未同步" }}" else syncMessage, color = Muted, fontSize = 12.sp) }
+                Button(onClick = sync, enabled = !syncing) { Text(if (syncing) "同步中" else "立即更新") }
+            }
+        }
+        draws.take(100).forEach { draw ->
+            CardBox {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("${draw.issue}期", color = Ink, fontWeight = FontWeight.Bold)
+                    Text(draw.date, color = Muted, fontSize = 12.sp)
+                }
+                Spacer(Modifier.height(10.dp)); GameDrawNumbers(draw, game)
+                Text("和值 ${draw.front.sum()} · 跨度 ${(draw.front.maxOrNull() ?: 0) - (draw.front.minOrNull() ?: 0)}", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 8.dp))
+            }
         }
     }
 }
@@ -263,38 +323,17 @@ private fun GameDataNotice(game: LotteryGame) {
 }
 
 @Composable
-private fun Home(draws: List<Draw>, pinned: Ticket?, quick: List<Ticket>, years: Int, amount: Int, mode: String, game: LotteryGame, themeIndex: Int,
+private fun Home(draws: List<Draw>, gameDraws: List<GameDraw>, pinned: Ticket?, quick: List<Ticket>, years: Int, amount: Int, mode: String, game: LotteryGame, themeIndex: Int,
                  setYears: (Int) -> Unit, setAmount: (Int) -> Unit, setMode: (String) -> Unit,
                  generate: () -> Unit, syncTime: String, setGame: (String) -> Unit, setTheme: (Int) -> Unit) {
-    val (_, nextDate) = drawCalendar(draws.firstOrNull()?.date.orEmpty())
+    val latestDate = if (game.code == "ssq") draws.firstOrNull()?.date.orEmpty() else gameDraws.firstOrNull()?.date.orEmpty()
+    val (_, nextDate) = drawCalendar(latestDate)
     PageScroll {
-        Header("彩票智析", "统计模型参考 · ${game.name}", if (game.code == "ssq") syncTime else "待接入")
-        CardBox {
-            Label("切换彩种")
-            ChipRow(LotteryGames.all.map { it.name }, game.name) { name -> setGame(LotteryGames.all.first { it.name == name }.code) }
-        }
-        CardBox {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text("主题颜色", color = Ink, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                Text(ThemePalette[themeIndex].first, color = Green, fontSize = 12.sp)
-            }
-            Row(Modifier.fillMaxWidth().padding(top = 12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                ThemePalette.forEachIndexed { index, (name, color) ->
-                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable { setTheme(index) }) {
-                        Box(Modifier.size(if (themeIndex == index) 29.dp else 25.dp)
-                            .background(color, CircleShape)
-                            .then(if (themeIndex == index) Modifier.border(2.dp, color.copy(alpha = .3f), CircleShape) else Modifier), contentAlignment = Alignment.Center) {
-                            if (themeIndex == index) Text("✓", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                        }
-                        Text(name, color = Muted, fontSize = 9.sp, modifier = Modifier.padding(top = 4.dp))
-                    }
-                }
-            }
-        }
+        Header("彩票智析", "统计模型参考 · ${game.name}", syncTime)
         CardBox {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Column { Text("本期推荐号码", color = Muted, fontSize = 13.sp); Text("AI 集成 · 候选池择优", color = Ink, fontSize = 18.sp, fontWeight = FontWeight.Bold) }
-                Text(if (game.code == "ssq") "${draws.size}期数据" else game.name, color = Green, fontSize = 11.sp)
+                Text("${if (game.code == "ssq") draws.size else gameDraws.size}期数据", color = Green, fontSize = 11.sp)
             }
             Spacer(Modifier.height(16.dp))
             if (pinned != null) {
@@ -304,14 +343,15 @@ private fun Home(draws: List<Draw>, pinned: Ticket?, quick: List<Ticket>, years:
         }
         CardBox {
             Label("${game.name} · 开奖信息")
-            if (game.code == "ssq" && draws.isNotEmpty()) {
-                Text("通常每周二、四、日开奖 · 下期开奖日：$nextDate", color = Green, fontSize = 13.sp)
-                val draw = draws.first()
+            if ((game.code == "ssq" && draws.isNotEmpty()) || (game.code != "ssq" && gameDraws.isNotEmpty())) {
+                Text("${game.name}开奖信息 · 下期开奖日：$nextDate", color = Green, fontSize = 13.sp)
+                val drawDate = if (game.code == "ssq") draws.first().date else gameDraws.first().date
+                val drawIssue = if (game.code == "ssq") draws.first().issue else gameDraws.first().issue
                 HorizontalDivider(Modifier.padding(vertical = 12.dp), color = Color(0xFFEDF1EE))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("最近一期官方开奖", color = Ink, fontWeight = FontWeight.Bold); Text("${draw.date} · ${draw.issue}期", color = Muted, fontSize = 12.sp) }
-                Spacer(Modifier.height(12.dp)); Numbers(draw.reds, draw.blue, true)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("最近一期官方开奖", color = Ink, fontWeight = FontWeight.Bold); Text("$drawDate · ${drawIssue}期", color = Muted, fontSize = 12.sp) }
+                Spacer(Modifier.height(12.dp)); if (game.code == "ssq") Numbers(draws.first().reds, draws.first().blue, true) else GameDrawNumbers(gameDraws.first(), game)
             } else {
-                Text("号码规则已支持；该彩种的官方开奖数据尚未接入。开奖时间及结果请以官方公告为准。", color = Muted, fontSize = 12.sp)
+                Text("等待首次同步官方开奖数据。", color = Muted, fontSize = 12.sp)
             }
         }
         CardBox {
@@ -332,6 +372,27 @@ private fun Home(draws: List<Draw>, pinned: Ticket?, quick: List<Ticket>, years:
                         TicketNumbers(ticket, true)
                     }
                     Text("结构评分 ${ticket.score}", color = Muted, fontSize = 10.sp, modifier = Modifier.align(Alignment.End).padding(top = 4.dp))
+                }
+            }
+        }
+        CardBox {
+            Label("切换彩种")
+            ChipRow(LotteryGames.all.map { it.name }, game.name) { name -> setGame(LotteryGames.all.first { it.name == name }.code) }
+        }
+        CardBox {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text("主题颜色", color = Ink, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                Text(ThemePalette[themeIndex].first, color = Green, fontSize = 12.sp)
+            }
+            Row(Modifier.fillMaxWidth().padding(top = 12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                ThemePalette.forEachIndexed { index, (name, color) ->
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable { setTheme(index) }) {
+                        Box(Modifier.size(if (themeIndex == index) 29.dp else 25.dp).background(color, CircleShape)
+                            .then(if (themeIndex == index) Modifier.border(2.dp, color.copy(alpha = .42f), CircleShape) else Modifier), contentAlignment = Alignment.Center) {
+                            if (themeIndex == index) Text("✓", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        }
+                        Text(name, color = Muted, fontSize = 9.sp, modifier = Modifier.padding(top = 4.dp))
+                    }
                 }
             }
         }
@@ -551,4 +612,3 @@ private fun parseTicket(value: String): Ticket? = runCatching {
     val secondary = parts.getOrNull(4)?.takeIf { it.isNotBlank() }?.split(',')?.map(String::toInt) ?: listOf(blue)
     Ticket(parts[0].split(',').map(String::toInt), blue, parts[2].toInt(), gameCode, secondary)
 }.getOrNull()
-
