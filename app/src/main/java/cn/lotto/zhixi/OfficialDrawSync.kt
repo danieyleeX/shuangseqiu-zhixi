@@ -23,7 +23,7 @@ class OfficialDrawSync(private val database: LotteryDatabase) {
         total += syncWelfare("fc3d", "3d")
         total += syncSport("dlt", "85")
         total += syncSport("pl3", "35")
-        total += syncSport("pl5", "36")
+        total += syncSport("pl5", "350133")
         return total
     }
     private fun syncWelfare(gameCode: String, apiName: String): Int {
@@ -64,7 +64,7 @@ class OfficialDrawSync(private val database: LotteryDatabase) {
         } finally { connection.disconnect() }
     }
     private fun syncSport(gameCode: String, gameNo: String): Int {
-        val url = URL("https://webapi.sporttery.cn/gateway/lottery/getHistoryPageListV1.qry?gameNo=$gameNo&provinceId=0&pageSize=100&isVerify=1&pageNo=1")
+        val url = URL("https://webapi.sporttery.cn/gateway/lottery/getHistoryPageListV1.qry?gameNo=$gameNo&provinceId=0&isVerify=1&pageNo=1&pageSize=100&termLimits=100")
         val connection = (url.openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"; connectTimeout = 15_000; readTimeout = 20_000
             setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/131.0 Mobile Safari/537.36")
@@ -86,7 +86,7 @@ class OfficialDrawSync(private val database: LotteryDatabase) {
                     add(GameDraw(gameCode, row.optString("lotteryDrawNum"), row.optString("lotteryDrawTime").take(10), nums.take(frontCount), nums.drop(frontCount).take(if (gameCode == "dlt") 2 else 0)))
                 }
             }
-            require(rows.isNotEmpty()) { "中国体彩网${gameCode}开奖数据为空或格式变化" }
+            require(rows.isNotEmpty()) { "中国体彩网${gameCode}开奖数据为空（游戏编号 $gameNo），请检查官方接口" }
             return database.upsertGame(rows, "lottery.gov.cn")
         } finally { connection.disconnect() }
     }
