@@ -39,13 +39,17 @@ import java.time.format.DateTimeFormatter
 
 private val Ink = Color(0xFF19332D)
 private val Muted = Color(0xFF788A82)
-private val Green = Color(0xFF147D68)
+private var Green by mutableStateOf(Color(0xFFD94372))
 private val DeepGreen = Color(0xFF0D5B4D)
 private val CanvasBg = Color(0xFFF3F7F4)
 private val Red = Color(0xFFE65B62)
 private val Blue = Color(0xFF4B83D7)
 private val Amber = Color(0xFFE3B45E)
 private val ModelOptions = listOf("AI集成", "综合模型", "近期趋势", "热号优先", "冷热搭配", "遗漏反转", "均衡型", "分区均衡")
+private val ThemePalette = listOf(
+    "玫红" to Color(0xFFD94372), "珊瑚" to Color(0xFFEF665E), "琥珀" to Color(0xFFD49735),
+    "森绿" to Color(0xFF328B6D), "晴蓝" to Color(0xFF4D78C8), "薰紫" to Color(0xFF855EB6)
+)
 private data class TicketFilters(val sum: IntRange, val odd: IntRange, val big: IntRange, val maxRuns: Int)
 
 class MainActivity : ComponentActivity() {
@@ -64,6 +68,11 @@ fun App(db: LotteryDatabase) {
     val scope = rememberCoroutineScope()
     val prefs = remember { context.getSharedPreferences("lottery_ui", 0) }
     var page by remember { mutableIntStateOf(0) }
+    var selectedGameCode by remember { mutableStateOf(prefs.getString("selected_game", "ssq") ?: "ssq") }
+    val selectedGame = remember(selectedGameCode) { LotteryGames.byCode(selectedGameCode) }
+    var themeIndex by remember { mutableIntStateOf(prefs.getInt("theme_index", 0).coerceIn(0, ThemePalette.lastIndex)) }
+    val selectedTheme = ThemePalette[themeIndex]
+    SideEffect { Green = selectedTheme.second }
     var years by remember { mutableIntStateOf(1) }
     var amount by remember { mutableIntStateOf(3) }
     var mode by remember { mutableStateOf("综合模型") }
@@ -74,12 +83,12 @@ fun App(db: LotteryDatabase) {
     var syncMessage by remember { mutableStateOf("") }
     var syncTime by remember { mutableStateOf(context.getSharedPreferences("sync", 0).getString("last_ok", null).orEmpty()) }
     val historyScroll = rememberScrollState()
-    val pinnedTicket = remember(draws) {
+    val pinnedTicket = remember(draws, selectedGameCode) {
         if (draws.isEmpty()) null else {
-            val pinnedKey = "pinned_ai_candidate_${draws.first().issue}"
+            val pinnedKey = "pinned_ai_candidate_${selectedGame.code}_${draws.first().issue}"
             val saved = prefs.getString(pinnedKey, null)
             val restored = saved?.let(::parseTicket)
-            restored ?: LotteryEngine.generate(draws, 1, 1, "AI集成").first().also { ticket ->
+            restored ?: LotteryEngine.generateForGame(draws, 1, 1, "AI集成", selectedGame, candidatePoolMultiplier = 250).first().also { ticket ->
                 prefs.edit().putString(pinnedKey, serializeTicket(ticket)).apply()
             }
         }
@@ -105,7 +114,7 @@ fun App(db: LotteryDatabase) {
         }
     }
 
-    MaterialTheme(colorScheme = lightColorScheme(primary = Green, background = CanvasBg, surface = Color.White)) {
+        MaterialTheme(colorScheme = lightColorScheme(primary = selectedTheme.second, secondary = selectedTheme.second, background = CanvasBg, surface = Color.White)) {
         Scaffold(
             containerColor = Color.Transparent,
             bottomBar = {
@@ -132,7 +141,7 @@ fun App(db: LotteryDatabase) {
                             contentAlignment = Alignment.Center
                         ) {
                             if (selected) {
-                                Box(Modifier.size(44.dp).background(Color(0xFFE0F2E9), CircleShape), contentAlignment = Alignment.Center) {
+                                Box(Modifier.size(44.dp).background(Green.copy(alpha = .16f), CircleShape), contentAlignment = Alignment.Center) {
                                     Icon(painterResource(if (historyReturn) R.drawable.ic_nav_top else icons[index]), contentDescription = if (historyReturn) "回到顶部" else label, tint = Green, modifier = Modifier.size(27.dp))
                                 }
                             } else {
@@ -149,14 +158,16 @@ fun App(db: LotteryDatabase) {
         ) { inset ->
             Box(Modifier.fillMaxSize().background(CanvasBg).padding(inset)) {
                 when (page) {
-                    0 -> Home(draws, pinnedTicket, homeQuick, years, amount, mode,
+                    0 -> Home(draws, pinnedTicket, homeQuick, years, amount, mode, selectedGame, themeIndex,
                         { years = it }, { amount = it }, { mode = it },
-                        { homeQuick = LotteryEngine.generate(draws, amount, years, mode) }, syncTime)
-                    1 -> Analysis(draws, years, { years = it })
-                    2 -> History(draws, syncing, syncMessage, syncTime, ::sync, historyScroll)
-                    else -> Smart(draws, years, amount, mode, { years = it }, { amount = it }, { mode = it },
-                        { smartTickets = LotteryEngine.generate(draws, amount, years, mode) },
-                        { filters -> smartTickets = LotteryEngine.generate(draws, amount, years, mode, sumRange = filters.sum, oddRange = filters.odd, bigRange = filters.big, maxConsecutivePairs = filters.maxRuns) },
+                        { homeQuick = LotteryEngine.generateForGame(draws, amount, years, mode, selectedGame) }, syncTime,
+                        { code -> selectedGameCode = code; prefs.edit().putString("selected_game", code).apply(); homeQuick = emptyList(); smartTickets = emptyList() },
+                        { index -> themeIndex = index; prefs.edit().putInt("theme_index", index).apply() })
+                    1 -> if (selectedGame.code == "ssq") Analysis(draws, years, { years = it }) else GameDataNotice(selectedGame)
+                    2 -> if (selectedGame.code == "ssq") History(draws, syncing, syncMessage, syncTime, ::sync, historyScroll) else GameDataNotice(selectedGame)
+                    else -> Smart(draws, years, amount, mode, selectedGame, { years = it }, { amount = it }, { mode = it },
+                        { smartTickets = LotteryEngine.generateForGame(draws, amount, years, mode, selectedGame) },
+                        { filters -> smartTickets = LotteryEngine.generateForGame(draws, amount, years, mode, selectedGame, sumRange = filters.sum, oddRange = filters.odd, bigRange = filters.big, maxConsecutivePairs = filters.maxRuns) },
                         smartTickets)
                 }
             }
@@ -194,11 +205,28 @@ private fun Label(text: String) {
 }
 
 @Composable
-private fun Numbers(reds: List<Int>, blue: Int, small: Boolean = false) {
+private fun Numbers(reds: List<Int>, blue: Int, small: Boolean = false, blueNumbers: List<Int> = listOf(blue)) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(if (small) 5.dp else 7.dp)) {
         reds.forEach { Ball(it, Red, small) }
-        Text("+", color = Muted, fontSize = 14.sp)
-        Ball(blue, Blue, small)
+        if (blueNumbers.isNotEmpty()) {
+            Text("+", color = Muted, fontSize = 14.sp)
+            blueNumbers.forEach { Ball(it, Blue, small) }
+        }
+    }
+}
+
+@Composable
+private fun TicketNumbers(ticket: Ticket, small: Boolean = false) {
+    if (ticket.gameCode == "ssq" || ticket.gameCode == "dlt") {
+        Numbers(ticket.reds, ticket.secondary.firstOrNull() ?: ticket.blue, small, ticket.secondary)
+    } else {
+        Row(horizontalArrangement = Arrangement.spacedBy(if (small) 5.dp else 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            ticket.reds.forEach { digit ->
+                Box(Modifier.size(if (small) 30.dp else 38.dp).background(Color(0xFFFFE8EE), RoundedCornerShape(10.dp)), contentAlignment = Alignment.Center) {
+                    Text(digit.toString(), color = Green, fontWeight = FontWeight.ExtraBold, fontSize = if (small) 15.sp else 19.sp)
+                }
+            }
+        }
     }
 }
 
@@ -223,33 +251,68 @@ private fun ChipRow(values: List<String>, selected: String, choose: (String) -> 
 }
 
 @Composable
-private fun Home(draws: List<Draw>, pinned: Ticket?, quick: List<Ticket>, years: Int, amount: Int, mode: String,
+private fun GameDataNotice(game: LotteryGame) {
+    PageScroll {
+        Header("${game.name}数据", "开奖历史暂未接入")
+        CardBox {
+            Label("当前支持情况")
+            Text("${game.name} 的号码规则和智能选号已可使用。官方历史开奖数据目前只接入双色球，因此本页不会展示双色球数据作为${game.name}的历史统计。", color = Ink, fontSize = 14.sp)
+            Text("切换回双色球即可查看官方开奖历史、频率分析和回测数据。", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 12.dp))
+        }
+    }
+}
+
+@Composable
+private fun Home(draws: List<Draw>, pinned: Ticket?, quick: List<Ticket>, years: Int, amount: Int, mode: String, game: LotteryGame, themeIndex: Int,
                  setYears: (Int) -> Unit, setAmount: (Int) -> Unit, setMode: (String) -> Unit,
-                 generate: () -> Unit, syncTime: String) {
+                 generate: () -> Unit, syncTime: String, setGame: (String) -> Unit, setTheme: (Int) -> Unit) {
     val (_, nextDate) = drawCalendar(draws.firstOrNull()?.date.orEmpty())
     PageScroll {
-        Header("彩票智析", "统计模型参考 · 双色球", syncTime)
+        Header("彩票智析", "统计模型参考 · ${game.name}", if (game.code == "ssq") syncTime else "待接入")
+        CardBox {
+            Label("切换彩种")
+            ChipRow(LotteryGames.all.map { it.name }, game.name) { name -> setGame(LotteryGames.all.first { it.name == name }.code) }
+        }
         CardBox {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Column { Text("本期推荐号码", color = Muted, fontSize = 13.sp); Text("综合模型", color = Ink, fontSize = 18.sp, fontWeight = FontWeight.Bold) }
-                Text("${draws.size} 期", color = Green, fontSize = 12.sp)
+                Text("主题颜色", color = Ink, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                Text(ThemePalette[themeIndex].first, color = Green, fontSize = 12.sp)
+            }
+            Row(Modifier.fillMaxWidth().padding(top = 12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                ThemePalette.forEachIndexed { index, (name, color) ->
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable { setTheme(index) }) {
+                        Box(Modifier.size(if (themeIndex == index) 29.dp else 25.dp)
+                            .background(color, CircleShape)
+                            .then(if (themeIndex == index) Modifier.border(2.dp, color.copy(alpha = .3f), CircleShape) else Modifier), contentAlignment = Alignment.Center) {
+                            if (themeIndex == index) Text("✓", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        }
+                        Text(name, color = Muted, fontSize = 9.sp, modifier = Modifier.padding(top = 4.dp))
+                    }
+                }
+            }
+        }
+        CardBox {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Column { Text("本期推荐号码", color = Muted, fontSize = 13.sp); Text("AI 集成 · 候选池择优", color = Ink, fontSize = 18.sp, fontWeight = FontWeight.Bold) }
+                Text(if (game.code == "ssq") "${draws.size}期数据" else game.name, color = Green, fontSize = 11.sp)
             }
             Spacer(Modifier.height(16.dp))
             if (pinned != null) {
-                Numbers(pinned.reds, pinned.blue)
-                Text("结构评分 ${pinned.score} / 100 · 仅供统计参考", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 10.dp))
+                TicketNumbers(pinned)
+                Text("结构评分 ${pinned.score} / 100 · 从 250 组候选中择优 · 不代表中奖概率", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 10.dp))
             } else Text("历史数据准备中", color = Muted)
         }
         CardBox {
-            Label("开奖信息")
-            Text("双色球 · 通常每周二、四、日开奖", color = Ink, fontSize = 13.sp)
-            Text("下期开奖日：$nextDate", color = Green, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, modifier = Modifier.padding(top = 5.dp))
-            HorizontalDivider(Modifier.padding(vertical = 14.dp), color = Color(0xFFEDF1EE))
-            if (draws.isNotEmpty()) {
+            Label("${game.name} · 开奖信息")
+            if (game.code == "ssq" && draws.isNotEmpty()) {
+                Text("通常每周二、四、日开奖 · 下期开奖日：$nextDate", color = Green, fontSize = 13.sp)
                 val draw = draws.first()
+                HorizontalDivider(Modifier.padding(vertical = 12.dp), color = Color(0xFFEDF1EE))
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("最近一期官方开奖", color = Ink, fontWeight = FontWeight.Bold); Text("${draw.date} · ${draw.issue}期", color = Muted, fontSize = 12.sp) }
                 Spacer(Modifier.height(12.dp)); Numbers(draw.reds, draw.blue, true)
-            } else Text("官方历史数据待同步", color = Muted)
+            } else {
+                Text("号码规则已支持；该彩种的官方开奖数据尚未接入。开奖时间及结果请以官方公告为准。", color = Muted, fontSize = 12.sp)
+            }
         }
         CardBox {
             Label("快速生成")
@@ -266,7 +329,7 @@ private fun Home(draws: List<Draw>, pinned: Ticket?, quick: List<Ticket>, years:
                 quick.forEachIndexed { index, ticket ->
                     Row(Modifier.fillMaxWidth().padding(top = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                         Text("%02d".format(index + 1), color = Green, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                        Numbers(ticket.reds, ticket.blue, true)
+                        TicketNumbers(ticket, true)
                     }
                     Text("结构评分 ${ticket.score}", color = Muted, fontSize = 10.sp, modifier = Modifier.align(Alignment.End).padding(top = 4.dp))
                 }
@@ -383,57 +446,65 @@ private fun History(draws: List<Draw>, syncing: Boolean, message: String, time: 
 }
 
 @Composable
-private fun Smart(draws: List<Draw>, years: Int, amount: Int, mode: String, setYears: (Int) -> Unit, setAmount: (Int) -> Unit,
+private fun Smart(draws: List<Draw>, years: Int, amount: Int, mode: String, game: LotteryGame, setYears: (Int) -> Unit, setAmount: (Int) -> Unit,
                   setMode: (String) -> Unit, generate: () -> Unit, generateFiltered: (TicketFilters) -> Unit, tickets: List<Ticket>) {
     var custom by remember { mutableStateOf(false) }
-    var sumMin by remember { mutableStateOf("60") }
-    var sumMax by remember { mutableStateOf("150") }
+    var generatePressed by remember { mutableStateOf(false) }
+    val minPossibleSum = if (game.digits) 0 else game.frontCount * (game.frontCount + 1) / 2
+    val maxPossibleSum = if (game.digits) game.frontCount * 9 else game.frontCount * (2 * game.frontMax - game.frontCount + 1) / 2
+    var sumMin by remember(game.code) { mutableStateOf(if (game.digits) "0" else "60") }
+    var sumMax by remember(game.code) { mutableStateOf(if (game.digits) maxPossibleSum.toString() else "150") }
     var oddChoice by remember { mutableStateOf("1–5") }
     var bigChoice by remember { mutableStateOf("1–5") }
     var maxRunsChoice by remember { mutableStateOf("最多2组") }
-    val result = remember(draws, mode, years) { LotteryEngine.backtest(draws, mode, years) }
+    val result = remember(draws, mode, years, game.code) { if (game.code == "ssq") LotteryEngine.backtest(draws, mode, years) else null }
     PageScroll {
-        Header("智能选号", "多模型评分 · 历史回测 · 自定义筛选")
+        Header("智能选号", "${game.name} · 多模型评分 · 自定义筛选")
         if (tickets.isNotEmpty()) CardBox {
             Label("本次候选 · ${tickets.size} 组")
             tickets.forEachIndexed { index, ticket ->
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     Text("第 ${index + 1} 组", color = Ink, fontWeight = FontWeight.Bold); Text("结构评分 ${ticket.score}", color = Green, fontSize = 12.sp)
                 }
-                Spacer(Modifier.height(10.dp)); Numbers(ticket.reds, ticket.blue, true)
+                Spacer(Modifier.height(10.dp)); TicketNumbers(ticket, true)
                 if (index < tickets.lastIndex) HorizontalDivider(Modifier.padding(vertical = 12.dp), color = Color(0xFFEFF2EF))
             }
         }
         CardBox {
-            Label("选号设置")
+            Label("选号设置与自定义筛选")
             Text("策略", color = Muted, fontSize = 12.sp); Spacer(Modifier.height(7.dp)); ChipRow(ModelOptions, mode, setMode)
             Spacer(Modifier.height(13.dp)); Text("数据窗口", color = Muted, fontSize = 12.sp); Spacer(Modifier.height(7.dp)); ChipRow((1..10).map { "${it}年" }, "${years}年") { setYears(it.dropLast(1).toInt()) }
             Spacer(Modifier.height(13.dp)); Text("候选组数", color = Muted, fontSize = 12.sp); Spacer(Modifier.height(7.dp)); ChipRow((1..10).map { "${it}组" }, "${amount}组") { setAmount(it.dropLast(1).toInt()) }
+            Text("可按和值、奇偶、大号比例与连号数量筛选", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 8.dp))
             Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(custom, { custom = it }); Text("启用自定义筛选", color = Ink, fontSize = 13.sp) }
             if (custom) {
-                Text("红球和值（21–183）", color = Muted, fontSize = 12.sp)
+                Text("号码和值（$minPossibleSum–$maxPossibleSum）", color = Muted, fontSize = 12.sp)
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(top = 6.dp)) {
                     OutlinedTextField(sumMin, { sumMin = it }, label = { Text("最小值") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f), singleLine = true)
                     OutlinedTextField(sumMax, { sumMax = it }, label = { Text("最大值") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f), singleLine = true)
                 }
                 Text("奇数红球个数", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 12.dp, bottom = 6.dp))
                 ChipRow(listOf("不限", "1–5", "2–4", "3个"), oddChoice) { oddChoice = it }
-                Text("大号（17–33）个数", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 12.dp, bottom = 6.dp))
+                val bigThreshold = if (game.digits) 5 else if (game.code == "dlt") 18 else 17
+                Text("大号（$bigThreshold–${if (game.digits) 9 else game.frontMax}）个数", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 12.dp, bottom = 6.dp))
                 ChipRow(listOf("不限", "1–5", "2–4", "3个"), bigChoice) { bigChoice = it }
                 Text("连续号上限", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 12.dp, bottom = 6.dp))
                 ChipRow(listOf("不限", "最多1组", "最多2组"), maxRunsChoice) { maxRunsChoice = it }
             }
             Spacer(Modifier.height(10.dp))
             Button(onClick = {
+                generatePressed = true
                 if (custom) {
-                    val min = sumMin.toIntOrNull()?.coerceIn(21, 183) ?: 60
-                    val max = (sumMax.toIntOrNull() ?: 150).coerceIn(min, 183)
+                    val min = sumMin.toIntOrNull()?.coerceIn(minPossibleSum, maxPossibleSum) ?: minPossibleSum
+                    val max = (sumMax.toIntOrNull() ?: maxPossibleSum).coerceIn(min, maxPossibleSum)
                     fun range(choice: String) = when (choice) { "1–5" -> 1..5; "2–4" -> 2..4; "3个" -> 3..3; else -> 0..6 }
                     val maxRuns = when (maxRunsChoice) { "最多1组" -> 1; "最多2组" -> 2; else -> 5 }
                     generateFiltered(TicketFilters(min..max, range(oddChoice), range(bigChoice), maxRuns))
                 } else generate()
             },
                 modifier = Modifier.fillMaxWidth().height(50.dp), shape = RoundedCornerShape(15.dp)) { Text("生成 $amount 组候选", fontWeight = FontWeight.Bold) }
+            if (generatePressed && tickets.isEmpty()) Text("当前条件没有找到组合，请放宽和值、比例或连号限制。", color = Red, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
+            if (tickets.isNotEmpty() && tickets.size < amount) Text("符合条件的组合只有 ${tickets.size} 组，可放宽筛选条件。", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
         }
         CardBox {
             Label("综合评分权重")
@@ -446,12 +517,19 @@ private fun Smart(draws: List<Draw>, years: Int, amount: Int, mode: String, setY
             }
             Text("AI 集成采用本地多因子集成评分，不依赖网络大模型或已训练模型。所有策略仅总结历史特征，不代表中奖概率。", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 8.dp))
         }
-        CardBox {
-            Label("历史回测 · 最近 ${result.draws} 期")
-            Text("红球命中 ${result.redHits} 次 · 蓝球命中 ${result.blueHits} 次", color = Ink, fontSize = 14.sp)
-            Text("每期平均命中 ${"%.2f".format(result.meanHits)} 个号码", color = Green, fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp))
-            Text("命中分布：0 个 ${result.hit0}期 · 1 个 ${result.hit1}期 · 2 个 ${result.hit2}期 · 3 个及以上 ${result.hit3Plus}期", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
-            Text("逐期向前滚动验证，仅使用当期之前的历史数据。", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 8.dp))
+        if (result != null) {
+            CardBox {
+                Label("历史回测 · 最近 ${result.draws} 期")
+                Text("红球命中 ${result.redHits} 次 · 蓝球命中 ${result.blueHits} 次", color = Ink, fontSize = 14.sp)
+                Text("每期平均命中 ${"%.2f".format(result.meanHits)} 个号码", color = Green, fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp))
+                Text("命中分布：0 个 ${result.hit0}期 · 1 个 ${result.hit1}期 · 2 个 ${result.hit2}期 · 3 个及以上 ${result.hit3Plus}期", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
+                Text("逐期向前滚动验证，仅使用当期之前的历史数据。", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 8.dp))
+            }
+        } else {
+            CardBox {
+                Label("${game.name}历史回测")
+                Text("该彩种官方历史数据尚未接入，暂时无法提供真实历史回测。当前组合分仅衡量数字结构。", color = Muted, fontSize = 12.sp)
+            }
         }
     }
 }
@@ -465,8 +543,12 @@ private fun drawCalendar(latestDate: String): Pair<String, String> {
     }.getOrDefault(latestDate to "以官网公告为准")
 }
 
-private fun serializeTicket(ticket: Ticket) = ticket.reds.joinToString(",") + "+" + ticket.blue + "+" + ticket.score
+private fun serializeTicket(ticket: Ticket) = ticket.reds.joinToString(",") + "+" + ticket.blue + "+" + ticket.score + "+" + ticket.gameCode + "+" + ticket.secondary.joinToString(",")
 private fun parseTicket(value: String): Ticket? = runCatching {
-    val parts = value.split('+'); Ticket(parts[0].split(',').map(String::toInt), parts[1].toInt(), parts[2].toInt())
+    val parts = value.split('+')
+    val blue = parts[1].toInt()
+    val gameCode = parts.getOrNull(3) ?: "ssq"
+    val secondary = parts.getOrNull(4)?.takeIf { it.isNotBlank() }?.split(',')?.map(String::toInt) ?: listOf(blue)
+    Ticket(parts[0].split(',').map(String::toInt), blue, parts[2].toInt(), gameCode, secondary)
 }.getOrNull()
 
