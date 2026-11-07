@@ -19,11 +19,13 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -42,6 +44,7 @@ private val CanvasBg = Color(0xFFF3F7F4)
 private val Red = Color(0xFFE65B62)
 private val Blue = Color(0xFF4B83D7)
 private val Amber = Color(0xFFE3B45E)
+private val ModelOptions = listOf("AI集成", "综合模型", "近期趋势", "热号优先", "冷热搭配", "遗漏反转", "均衡型", "分区均衡")
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -100,27 +103,40 @@ fun App(db: LotteryDatabase) {
         Scaffold(
             containerColor = CanvasBg,
             bottomBar = {
-                NavigationBar(containerColor = Color.White, tonalElevation = 12.dp) {
+                Box(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 20.dp, vertical = 5.dp), contentAlignment = Alignment.Center) {
+                    Row(
+                        Modifier.fillMaxWidth().height(54.dp).shadow(12.dp, RoundedCornerShape(30.dp))
+                            .clip(RoundedCornerShape(30.dp)).background(Color.White.copy(alpha = .84f))
+                            .border(1.dp, Color.White.copy(alpha = .95f), RoundedCornerShape(30.dp)).padding(horizontal = 5.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically
+                    ) {
                     val labels = listOf("首页", "数据分析", "历史数据", "智能选号")
-                    val glyphs = listOf("⌂", "▥", if (historyScroll.value > 80) "↑" else "▤", "✦")
+                    val icons = listOf(R.drawable.ic_nav_home, R.drawable.ic_nav_analysis, R.drawable.ic_nav_history, R.drawable.ic_nav_smart)
                     labels.forEachIndexed { index, label ->
-                        NavigationBarItem(
-                            selected = page == index,
-                            onClick = {
-                                if (index == 2 && page == 2 && historyScroll.value > 0) scope.launch { historyScroll.animateScrollTo(0) }
-                                else page = index
+                        val selected = page == index
+                        val historyReturn = index == 2 && page == 2 && historyScroll.value > 80
+                        Box(
+                            Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(26.dp)).clickable {
+                                when {
+                                    historyReturn -> scope.launch { historyScroll.animateScrollTo(0) }
+                                    page == 2 && index != 2 -> scope.launch { historyScroll.scrollTo(0); page = index }
+                                    else -> page = index
+                                }
                             },
-                            icon = {
-                                Box(
-                                    Modifier.size(if (page == index) 34.dp else 30.dp)
-                                        .clip(RoundedCornerShape(12.dp))
-                                        .background(if (page == index) Color(0xFFE3F2EC) else Color.Transparent),
-                                    contentAlignment = Alignment.Center
-                                ) { Text(glyphs[index], color = if (page == index) Green else Muted, fontSize = 21.sp, fontWeight = FontWeight.Bold) }
-                            },
-                            label = { Text(if (index == 2 && historyScroll.value > 80) "历史数据 ↑" else label, fontSize = 10.sp) },
-                            colors = NavigationBarItemDefaults.colors(selectedIconColor = Green, selectedTextColor = Green, indicatorColor = Color.Transparent)
-                        )
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (selected) {
+                                Box(Modifier.size(44.dp).background(Color(0xFFE0F2E9), CircleShape), contentAlignment = Alignment.Center) {
+                                    Icon(painterResource(if (historyReturn) R.drawable.ic_nav_top else icons[index]), contentDescription = if (historyReturn) "回到顶部" else label, tint = Green, modifier = Modifier.size(27.dp))
+                                }
+                            } else {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                                    Icon(painterResource(icons[index]), contentDescription = label, tint = Muted, modifier = Modifier.size(18.dp))
+                                    Text(label, color = Muted, fontSize = 9.sp, lineHeight = 11.sp, modifier = Modifier.padding(top = 1.dp))
+                                }
+                            }
+                        }
+                    }
                     }
                 }
             }
@@ -205,7 +221,7 @@ private fun Home(draws: List<Draw>, pinned: Ticket?, quick: List<Ticket>, years:
         Header("彩票智析", "统计模型参考 · 双色球", syncTime)
         CardBox {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Column { Text("本期推荐号码", color = Muted, fontSize = 13.sp); Text("综合模型 · 固定展示", color = Ink, fontSize = 18.sp, fontWeight = FontWeight.Bold) }
+                Column { Text("本期推荐号码", color = Muted, fontSize = 13.sp); Text("综合模型", color = Ink, fontSize = 18.sp, fontWeight = FontWeight.Bold) }
                 Text("${draws.size} 期", color = Green, fontSize = 12.sp)
             }
             Spacer(Modifier.height(16.dp))
@@ -220,7 +236,7 @@ private fun Home(draws: List<Draw>, pinned: Ticket?, quick: List<Ticket>, years:
             Spacer(Modifier.height(11.dp))
             Row(verticalAlignment = Alignment.CenterVertically) { Text("生成组数", color = Muted, fontSize = 13.sp); Spacer(Modifier.width(10.dp)); ChipRow((1..10).map { "${it}组" }, "${amount}组") { setAmount(it.dropLast(1).toInt()) } }
             Spacer(Modifier.height(11.dp))
-            ChipRow(listOf("综合模型", "热号优先", "冷热搭配", "均衡型"), mode, setMode)
+            ChipRow(ModelOptions, mode, setMode)
             Spacer(Modifier.height(14.dp))
             Button(onClick = generate, modifier = Modifier.fillMaxWidth().height(50.dp), shape = RoundedCornerShape(15.dp)) { Text("✦  生成 $amount 组候选号码", fontWeight = FontWeight.Bold) }
             if (quick.isNotEmpty()) {
@@ -377,7 +393,7 @@ private fun Smart(draws: List<Draw>, years: Int, amount: Int, mode: String, setY
         }
         CardBox {
             Label("选号设置")
-            Text("策略", color = Muted, fontSize = 12.sp); Spacer(Modifier.height(7.dp)); ChipRow(listOf("综合模型", "热号优先", "冷热搭配", "均衡型"), mode, setMode)
+            Text("策略", color = Muted, fontSize = 12.sp); Spacer(Modifier.height(7.dp)); ChipRow(ModelOptions, mode, setMode)
             Spacer(Modifier.height(13.dp)); Text("数据窗口", color = Muted, fontSize = 12.sp); Spacer(Modifier.height(7.dp)); ChipRow((1..10).map { "${it}年" }, "${years}年") { setYears(it.dropLast(1).toInt()) }
             Spacer(Modifier.height(13.dp)); Text("候选组数", color = Muted, fontSize = 12.sp); Spacer(Modifier.height(7.dp)); ChipRow((1..10).map { "${it}组" }, "${amount}组") { setAmount(it.dropLast(1).toInt()) }
             Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(custom, { custom = it }); Text("启用和值筛选", color = Ink, fontSize = 13.sp) }
@@ -398,7 +414,7 @@ private fun Smart(draws: List<Draw>, years: Int, amount: Int, mode: String, setY
                     Text(" $weight%", color = Muted, fontSize = 11.sp, modifier = Modifier.width(43.dp))
                 }
             }
-            Text("评分用于组合结构比较，不代表中奖概率。", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 8.dp))
+            Text("AI 集成采用本地多因子集成评分，不依赖网络大模型或已训练模型。所有策略仅总结历史特征，不代表中奖概率。", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 8.dp))
         }
         CardBox {
             Label("历史回测 · 最近 ${result.draws} 期")
