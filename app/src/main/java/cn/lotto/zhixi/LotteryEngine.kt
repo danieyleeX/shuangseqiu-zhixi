@@ -27,6 +27,9 @@ object LotteryGames {
 data class BacktestResult(val draws: Int, val redHits: Int, val blueHits: Int, val hit0: Int, val hit1: Int, val hit2: Int, val hit3Plus: Int) {
     val meanHits: Double get() = if (draws == 0) 0.0 else (redHits + blueHits).toDouble() / draws
 }
+data class GameBacktestResult(val draws: Int, val frontHits: Int, val backHits: Int, val exactHits: Int, val hitDistribution: Map<Int, Int>) {
+    val meanHits: Double get() = if (draws == 0) 0.0 else (frontHits + backHits).toDouble() / draws
+}
 
 object LotteryEngine {
     fun frequency(draws: List<Draw>): IntArray = IntArray(34).also { f -> draws.forEach { d -> d.reds.forEach { f[it]++ } } }
@@ -202,8 +205,29 @@ object LotteryEngine {
         }
         return BacktestResult(total,red,blue,h0,h1,h2,h3)
     }
-}
 
+    fun backtestGame(draws: List<GameDraw>, game: LotteryGame, strategy: String, years: Int): GameBacktestResult {
+        val latestYear = draws.firstOrNull()?.date?.take(4)?.toIntOrNull() ?: return GameBacktestResult(0,0,0,0, emptyMap())
+        val sorted = draws.filter { (it.date.take(4).toIntOrNull() ?: 0) >= latestYear - years + 1 }.sortedWith(compareBy<GameDraw> { it.date }.thenBy { it.issue })
+        val from = (sorted.size - 101).coerceAtLeast(12)
+        if (sorted.size - from < 2) return GameBacktestResult(0,0,0,0, emptyMap())
+        var frontTotal = 0; var backTotal = 0; var exact = 0; var total = 0
+        val distribution = mutableMapOf<Int,Int>()
+        for (i in from until sorted.size) {
+            val target = sorted[i]
+            // 每个目标期仅使用之前的开奖样本；通用彩种候选器按固定期号种子复现。
+            val pick = generateForGame(emptyList(), 1, years, strategy, game, candidatePoolMultiplier = 6,
+                seed = target.issue.toLongOrNull() ?: (target.date.replace("-", "") + i).toLongOrNull() ?: i.toLong()).firstOrNull() ?: continue
+            val frontHit = if (game.digits) pick.reds.zip(target.front).count { (a,b) -> a == b } else pick.reds.intersect(target.front.toSet()).size
+            val backHit = if (game.backCount == 0) 0 else pick.secondary.intersect(target.back.toSet()).size
+            val isExact = if (game.digits) pick.reds == target.front else frontHit == game.frontCount && backHit == game.backCount
+            frontTotal += frontHit; backTotal += backHit; if (isExact) exact++
+            distribution[frontHit + backHit] = (distribution[frontHit + backHit] ?: 0) + 1
+            total++
+        }
+        return GameBacktestResult(total, frontTotal, backTotal, exact, distribution)
+    }
+}
 
 
 
