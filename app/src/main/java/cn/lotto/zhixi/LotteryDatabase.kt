@@ -4,7 +4,6 @@ import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import org.json.JSONArray
-import java.io.BufferedReader
 import java.util.zip.GZIPInputStream
 
 class LotteryDatabase(context: Context) : SQLiteOpenHelper(context, "shuangseqiu.db", null, 1) {
@@ -16,7 +15,14 @@ class LotteryDatabase(context: Context) : SQLiteOpenHelper(context, "shuangseqiu
 
     fun importAssetIfEmpty(context: Context): Int {
         if (readAll().isNotEmpty()) return 0
-        val text = context.assets.open("ssq_history.json.gz").use { input -> GZIPInputStream(input).bufferedReader(Charsets.UTF_8).readText() }
+        // Android Gradle unpacks .gz assets and stores them without the .gz suffix.
+        val text = runCatching {
+            context.assets.open("ssq_history.json").bufferedReader(Charsets.UTF_8).use { it.readText() }
+        }.getOrElse {
+            context.assets.open("ssq_history.json.gz").use { input ->
+                GZIPInputStream(input).bufferedReader(Charsets.UTF_8).use { it.readText() }
+            }
+        }
         val rows = JSONArray(text)
         val db = writableDatabase
         db.beginTransaction()
@@ -52,6 +58,8 @@ class LotteryDatabase(context: Context) : SQLiteOpenHelper(context, "shuangseqiu
         return output
     }
 }
+
+
 
 
 
