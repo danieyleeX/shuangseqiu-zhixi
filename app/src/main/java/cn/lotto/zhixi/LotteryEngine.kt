@@ -23,7 +23,14 @@ object LotteryEngine {
         return draws.filter { (it.date.take(4).toIntOrNull() ?: 0) >= cutoff }
     }
 
-    fun generate(draws: List<Draw>, count: Int, years: Int, mode: String, sumRange: IntRange = 21..183, oddRange: IntRange = 0..6, seed: Long = System.nanoTime()): List<Ticket> {
+    fun generate(
+        draws: List<Draw>, count: Int, years: Int, mode: String,
+        sumRange: IntRange = 21..183,
+        oddRange: IntRange = 0..6,
+        bigRange: IntRange = 0..6,
+        maxConsecutivePairs: Int = 5,
+        seed: Long = System.nanoTime()
+    ): List<Ticket> {
         require(count in 1..10)
         val data = window(draws, years)
         val redFreq = frequency(data); val blueFreq = blueFrequency(data); val miss = misses(data)
@@ -32,22 +39,33 @@ object LotteryEngine {
         val targetPool = if (mode == "AI集成") count * 6 else count
         val pool = mutableListOf<Ticket>(); val seen = mutableSetOf<String>(); val rng = Random(seed)
         var attempts = 0
-        while(pool.size < targetPool && attempts++ < targetPool * 300) {
+        while(pool.size < targetPool && attempts++ < targetPool * 1200) {
             val reds = weightedSample(rng, redFreq, recentFreq, miss, max, mode).sorted()
-            val sum = reds.sum(); val odd = reds.count { it % 2 == 1 }; val span = reds.last() - reds.first()
-            if(sum !in sumRange || odd !in oddRange) continue
+            val sum = reds.sum(); val odd = reds.count { it % 2 == 1 }; val big = reds.count { it >= 17 }
+            val runs = reds.zipWithNext().count { (a, b) -> b == a + 1 }
+            if(sum !in sumRange || odd !in oddRange || big !in bigRange || runs > maxConsecutivePairs) continue
             if (mode == "分区均衡" && listOf(reds.count { it <= 11 }, reds.count { it in 12..22 }, reds.count { it >= 23 }).any { it !in 1..3 }) continue
             val blue = weightedBlue(rng, blueFreq, mode)
             val key = reds.joinToString(",") + "+" + blue
             if(!seen.add(key)) continue
             pool += Ticket(reds, blue, score(data, reds, blue))
         }
-        while(pool.size < targetPool) {
+        var fallbackAttempts = 0
+        while(pool.size < targetPool && fallbackAttempts++ < targetPool * 12000) {
             val reds = (1..33).shuffled(rng).take(6).sorted(); val blue = rng.nextInt(1,17)
+            val sum = reds.sum(); val odd = reds.count { it % 2 == 1 }; val big = reds.count { it >= 17 }
+            val runs = reds.zipWithNext().count { (a, b) -> b == a + 1 }
             val key = reds.joinToString(",") + "+" + blue
-            if(seen.add(key) && (mode != "分区均衡" || listOf(reds.count { it <= 11 }, reds.count { it in 12..22 }, reds.count { it >= 23 }).all { it in 1..3 })) {
+            val valid = sum in sumRange && odd in oddRange && big in bigRange && runs <= maxConsecutivePairs
+            if(seen.add(key) && valid && (mode != "分区均衡" || listOf(reds.count { it <= 11 }, reds.count { it in 12..22 }, reds.count { it >= 23 }).all { it in 1..3 })) {
                 pool += Ticket(reds, blue, score(data, reds, blue))
             }
+        }
+        // Extreme or contradictory filters still return valid ticket-shaped output rather than hanging.
+        while (pool.size < count) {
+            val reds = (1..33).shuffled(rng).take(6).sorted(); val blue = rng.nextInt(1, 17)
+            val key = reds.joinToString(",") + "+" + blue
+            if (seen.add(key)) pool += Ticket(reds, blue, score(data, reds, blue))
         }
         return pool.sortedByDescending { it.score }.take(count)
     }
