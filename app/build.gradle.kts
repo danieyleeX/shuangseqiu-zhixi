@@ -1,7 +1,16 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
 }
+
+val localConfig = Properties().apply {
+    val localFile = rootProject.file("local.properties")
+    if (localFile.exists()) localFile.inputStream().use { stream -> this.load(stream) }
+}
+val defaultDoubaoKey = localConfig.getProperty("DOUBAO_API_KEY", "")
+    .replace("\\", "\\\\").replace("\"", "\\\"")
 
 android {
     namespace = "cn.lotto.zhixi"
@@ -12,8 +21,9 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "1.0.0"
+        buildConfigField("String", "DEFAULT_DOUBAO_API_KEY", "\"$defaultDoubaoKey\"")
     }
-    buildFeatures { compose = true }
+    buildFeatures { compose = true; buildConfig = true }
 }
 
 configurations.all {
