@@ -29,28 +29,41 @@ object LotteryEngine {
         val redFreq = frequency(data); val blueFreq = blueFrequency(data); val miss = misses(data)
         val recent = data.take(30); val recentFreq = frequency(recent)
         val max = redFreq.maxOrNull()?.coerceAtLeast(1) ?: 1
+        val targetPool = if (mode == "AI集成") count * 6 else count
         val pool = mutableListOf<Ticket>(); val seen = mutableSetOf<String>(); val rng = Random(seed)
         var attempts = 0
-        while(pool.size < count && attempts++ < count * 300) {
+        while(pool.size < targetPool && attempts++ < targetPool * 300) {
             val reds = weightedSample(rng, redFreq, recentFreq, miss, max, mode).sorted()
             val sum = reds.sum(); val odd = reds.count { it % 2 == 1 }; val span = reds.last() - reds.first()
             if(sum !in sumRange || odd !in oddRange) continue
+            if (mode == "分区均衡" && listOf(reds.count { it <= 11 }, reds.count { it in 12..22 }, reds.count { it >= 23 }).any { it !in 1..3 }) continue
             val blue = weightedBlue(rng, blueFreq, mode)
             val key = reds.joinToString(",") + "+" + blue
             if(!seen.add(key)) continue
             pool += Ticket(reds, blue, score(data, reds, blue))
         }
-        while(pool.size < count) {
+        while(pool.size < targetPool) {
             val reds = (1..33).shuffled(rng).take(6).sorted(); val blue = rng.nextInt(1,17)
             val key = reds.joinToString(",") + "+" + blue
-            if(seen.add(key)) pool += Ticket(reds, blue, score(data, reds, blue))
+            if(seen.add(key) && (mode != "分区均衡" || listOf(reds.count { it <= 11 }, reds.count { it in 12..22 }, reds.count { it >= 23 }).all { it in 1..3 })) {
+                pool += Ticket(reds, blue, score(data, reds, blue))
+            }
         }
-        return pool.sortedByDescending { it.score }
+        return pool.sortedByDescending { it.score }.take(count)
     }
 
     private fun weightedSample(rng: Random, freq: IntArray, recentFreq: IntArray, miss: IntArray, max: Int, mode: String): List<Int> {
-        val heatWeight = when(mode) { "热号优先" -> .68; "冷热搭配" -> .42; "均衡型" -> .30; else -> .48 }
-        val recentWeight = if(mode == "冷热搭配") .15 else .08
+        val heatWeight = when(mode) {
+            "热号优先" -> .68
+            "冷热搭配" -> .42
+            "均衡型" -> .30
+            "近期趋势" -> .25
+            "遗漏反转" -> .14
+            "分区均衡" -> .32
+            "AI集成" -> .34
+            else -> .48
+        }
+        val recentWeight = when(mode) { "近期趋势" -> .62; "冷热搭配", "AI集成" -> .22; else -> .08 }
         return (1..33).map { n ->
             val heat = (freq[n].toDouble() / max).coerceAtLeast(.02)
             val recent = recentFreq[n].toDouble() / (recentFreq.maxOrNull()?.coerceAtLeast(1) ?: 1)
@@ -60,6 +73,12 @@ object LotteryEngine {
                 "热号优先" -> heat * heatWeight + recent * recentWeight + .12
                 "冷热搭配" -> heat * heatWeight + overdue * .33 + recent * recentWeight + .06
                 "均衡型" -> balanced * .23 + heat * heatWeight + .1
+                "近期趋势" -> recent * recentWeight + heat * heatWeight + overdue * .08 + .04
+                "遗漏反转" -> overdue * .72 + heat * heatWeight + recent * .06 + .04
+                "分区均衡" -> heat * heatWeight + overdue * .16 + recent * .08 + .10
+                // AI集成为本地启发式集成：频率、近期、遗漏和号码位置多因子加权，
+                // 再从较大的候选池中按结构评分择优；不调用在线模型。
+                "AI集成" -> heat * .34 + recent * .22 + overdue * .22 + balanced * .13 + .08
                 else -> heat * heatWeight + overdue * .22 + balanced * .10 + recent * recentWeight + .06
             }
             n to (-kotlin.math.ln(rng.nextDouble().coerceAtLeast(1e-12)) / weight)
@@ -67,7 +86,8 @@ object LotteryEngine {
     }
     private fun weightedBlue(rng: Random, freq: IntArray, mode: String): Int {
         val max = freq.maxOrNull()?.coerceAtLeast(1) ?: 1
-        val weighted = (1..16).map { it to (freq[it].toDouble()/max + rng.nextDouble() * if(mode == "热号优先") .25 else .85) }
+        val randomFactor = when (mode) { "热号优先" -> .25; "近期趋势", "AI集成" -> .55; else -> .85 }
+        val weighted = (1..16).map { it to (freq[it].toDouble()/max + rng.nextDouble() * randomFactor) }
         return weighted.maxBy { it.second }.first
     }
     fun score(draws: List<Draw>, reds: List<Int>, blue: Int): Int {
@@ -97,6 +117,7 @@ object LotteryEngine {
         return BacktestResult(total,red,blue,h0,h1,h2,h3)
     }
 }
+
 
 
 
