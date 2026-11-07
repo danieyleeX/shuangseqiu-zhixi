@@ -166,9 +166,9 @@ fun App(db: LotteryDatabase) {
                         { homeQuick = LotteryEngine.generateForGame(draws, amount, years, mode, selectedGame) }, syncTime,
                         { code -> selectedGameCode = code; gameDraws = db.readGame(code); prefs.edit().putString("selected_game", code).apply(); homeQuick = emptyList(); smartTickets = emptyList() },
                         { index -> themeIndex = index; prefs.edit().putInt("theme_index", index).apply() })
-                    1 -> if (selectedGame.code == "ssq") Analysis(draws, years, { years = it }) else GameAnalysis(selectedGame, gameDraws)
+                    1 -> if (selectedGame.code == "ssq") Analysis(draws, years, { years = it }) else GameAnalysis(selectedGame, gameDraws, years, { years = it })
                     2 -> if (selectedGame.code == "ssq") History(draws, syncing, syncMessage, syncTime, ::sync, historyScroll) else GameHistory(selectedGame, gameDraws, syncing, syncMessage, syncTime, ::sync, historyScroll)
-                    else -> Smart(draws, years, amount, mode, selectedGame, { years = it }, { amount = it }, { mode = it },
+                    else -> Smart(draws, gameDraws, years, amount, mode, selectedGame, { years = it }, { amount = it }, { mode = it },
                         { smartTickets = LotteryEngine.generateForGame(draws, amount, years, mode, selectedGame) },
                         { filters -> smartTickets = LotteryEngine.generateForGame(draws, amount, years, mode, selectedGame, sumRange = filters.sum, oddRange = filters.odd, bigRange = filters.big, maxConsecutivePairs = filters.maxRuns) },
                         smartTickets)
@@ -260,44 +260,95 @@ private fun GameDrawNumbers(draw: GameDraw, game: LotteryGame) {
 }
 
 @Composable
-private fun GameAnalysis(game: LotteryGame, draws: List<GameDraw>) {
+private fun GameAnalysis(game: LotteryGame, draws: List<GameDraw>, years: Int, setYears: (Int) -> Unit) {
+    val latestYear = draws.firstOrNull()?.date?.take(4)?.toIntOrNull() ?: LocalDate.now().year
+    val data = draws.filter { (it.date.take(4).toIntOrNull() ?: 0) >= latestYear - years + 1 }
+    val firstNumber = if (game.digits) 0 else 1
+    val freq = IntArray(game.frontMax + 1)
+    data.forEach { d -> d.front.forEach { if (it in freq.indices) freq[it]++ } }
+    val misses = IntArray(game.frontMax + 1) { n -> if (n < firstNumber) 0 else data.indexOfFirst { n in it.front }.let { if (it < 0) data.size else it } }
+    val orderedFreq = (firstNumber..game.frontMax).map { freq[it] }.sorted()
+    val low = orderedFreq.getOrNull((orderedFreq.size * .33).toInt()) ?: 0
+    val high = orderedFreq.getOrNull((orderedFreq.size * .67).toInt()) ?: 0
+    val hot = (firstNumber..game.frontMax).filter { freq[it] > high }
+    val cold = (firstNumber..game.frontMax).filter { freq[it] < low }
+    val warm = (firstNumber..game.frontMax).filter { freq[it] in low..high }
+    val recent = data.take(40).reversed()
+    var selected by remember(game.code) { mutableIntStateOf(firstNumber) }
     PageScroll {
-        Header("${game.name}数据分析", "${draws.size} 期官方历史数据")
-        if (draws.isEmpty()) CardBox { Text("尚无本彩种历史数据，请点击历史数据页的同步按钮。", color = Muted) }
-        else {
-            val counts = IntArray(game.frontMax + 1)
-            draws.forEach { d -> d.front.forEach { if (it in counts.indices) counts[it]++ } }
-            CardBox {
-                Label("号码出现频率排行榜")
-                counts.indices.drop(1).sortedByDescending { counts[it] }.take(minOf(10, game.frontMax)).forEachIndexed { i, n ->
-                    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("${i + 1}. ${if (game.digits) n.toString() else "%02d".format(n)}", color = Ink)
-                        Text("${counts[n]} 次", color = Green)
+        Header("数据分析", "${game.name} · 开奖分布与号码结构 · ${data.size} 期样本")
+        CardBox { Label("分析区间"); ChipRow((1..10).map { "${it}年" }, "${years}年") { setYears(it.dropLast(1).toInt()) } }
+        CardBox {
+            Label(if (game.code == "dlt") "前区号码出现频率排行" else "号码出现频率排行榜")
+            (firstNumber..game.frontMax).sortedByDescending { freq[it] }.take(minOf(12, game.frontMax + 1 - firstNumber)).forEachIndexed { index, n ->
+                Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(if (game.digits) "$n" else "%02d".format(n), color = Red, fontWeight = FontWeight.Bold, modifier = Modifier.width(38.dp))
+                    Box(Modifier.weight(1f).height(9.dp).clip(RoundedCornerShape(8.dp)).background(Color(0xFFF0F3F0))) {
+                        Box(Modifier.fillMaxWidth(if (freq[n] == 0) 0f else freq[n].toFloat() / (freq.maxOrNull() ?: 1)).fillMaxHeight().background(if (index < 4) Red else Green, RoundedCornerShape(8.dp)))
                     }
+                    Text(" ${freq[n]} 次", color = Muted, fontSize = 11.sp, modifier = Modifier.width(56.dp))
                 }
             }
-            CardBox {
-                Label("近期开奖结构")
-                val recent = draws.take(30)
-                Text("近${recent.size}期平均和值：${"%.1f".format(recent.map { it.front.sum() }.average())}", color = Ink)
-                Text("近${recent.size}期平均跨度：${"%.1f".format(recent.map { (it.front.maxOrNull() ?: 0) - (it.front.minOrNull() ?: 0) }.average())}", color = Ink, modifier = Modifier.padding(top = 8.dp))
-                Text("奇偶比例、和值、跨度均为历史描述统计，不代表未来概率。", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 10.dp))
+            if (game.backCount > 0) {
+                HorizontalDivider(Modifier.padding(vertical = 8.dp), color = Color(0xFFEFF2EF))
+                Label("后区号码频率")
+                val backFreq = IntArray(game.backMax + 1)
+                data.forEach { d -> d.back.forEach { if (it in backFreq.indices) backFreq[it]++ } }
+                Text((1..game.backMax).sortedByDescending { backFreq[it] }.take(8).joinToString("    ") { "%02d · %d次".format(it, backFreq[it]) }, color = Blue, fontSize = 12.sp)
             }
         }
+        CardBox {
+            Label("热号、温号、冷号分布")
+            fun format(list: List<Int>) = list.sorted().joinToString("、") { if (game.digits) "$it" else "%02d".format(it) }
+            Text("热号  ${hot.size} 个：${format(hot)}", color = Red, fontSize = 12.sp)
+            Text("温号  ${warm.size} 个：${format(warm)}", color = Green, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
+            Text("冷号  ${cold.size} 个：${format(cold)}", color = Blue, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
+        }
+        CardBox {
+            Label("当前遗漏值排行")
+            Text((firstNumber..game.frontMax).sortedByDescending { misses[it] }.take(10).joinToString("    ") { (if (game.digits) "$it" else "%02d".format(it)) + " · ${misses[it]}期" }, color = Muted, fontSize = 12.sp)
+            Text("遗漏按当前分析窗口内的开奖期数计算", color = Muted, fontSize = 10.sp, modifier = Modifier.padding(top = 5.dp))
+        }
+        CardBox {
+            Label("号码结构特征")
+            data.firstOrNull()?.let { d ->
+                val sorted = d.front.sorted(); val odd = d.front.count { it % 2 == 1 }; val bigLimit = if (game.digits) 5 else (game.frontMax + 1) / 2
+                val big = d.front.count { it >= bigLimit }; val runs = sorted.distinct().zipWithNext().count { (a,b) -> b == a + 1 }
+                Text("最新一期 ${d.issue}：和值 ${d.front.sum()} · 跨度 ${(sorted.lastOrNull() ?: 0) - (sorted.firstOrNull() ?: 0)} · 奇偶 $odd:${d.front.size-odd} · 大小 $big:${d.front.size-big} · 连号 $runs 组", color = Ink, fontSize = 13.sp)
+            }
+            Text("近 40 期和值走势", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 14.dp)); MiniChart(recent.map { it.front.sum().toFloat() }, Red)
+            Text("近 40 期跨度走势", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 12.dp)); MiniChart(recent.map { ((it.front.maxOrNull() ?: 0) - (it.front.minOrNull() ?: 0)).toFloat() }, Blue)
+        }
+        CardBox {
+            Label("号码遗漏走势")
+            ChipRow((firstNumber..game.frontMax).map { if (game.digits) "$it" else "%02d".format(it) }, if (game.digits) "$selected" else "%02d".format(selected)) { selected = it.toInt() }
+            val trend = recent.mapIndexed { idx, _ -> recent.drop(idx).indexOfFirst { selected in it.front }.let { if (it < 0) (recent.size - idx).toFloat() else it.toFloat() } }
+            MiniChart(trend, Green)
+        }
+        Text("历史频率、遗漏和回测只描述过往样本，不能预测随机开奖结果。", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(horizontal = 20.dp))
     }
 }
 
 @Composable
 private fun GameHistory(game: LotteryGame, draws: List<GameDraw>, syncing: Boolean, syncMessage: String, syncTime: String, sync: () -> Unit, scroll: androidx.compose.foundation.ScrollState) {
+    var filter by remember(game.code) { mutableStateOf("最近30期") }
+    var query by remember(game.code) { mutableStateOf("") }
+    var year by remember(game.code) { mutableStateOf("全部年份") }
+    val yearOptions = remember(draws) { listOf("全部年份") + draws.map { it.date.take(4) }.distinct().sortedDescending() }
+    val years = when(filter) { "近3年" -> 3; "近5年" -> 5; "近10年" -> 10; else -> 1 }
+    val count = when(filter) { "最近50期" -> 50; "最近100期" -> 100; else -> 30 }
+    val filtered = draws.filter { (year == "全部年份" || it.date.startsWith(year)) && (query.isBlank() || it.issue.contains(query) || it.date.contains(query)) }
+        .let { if (filter.startsWith("近")) { val cutoff = (draws.firstOrNull()?.date?.take(4)?.toIntOrNull() ?: LocalDate.now().year) - years + 1; it.filter { d -> (d.date.take(4).toIntOrNull() ?: 0) >= cutoff } } else it.take(count) }
     Column(Modifier.fillMaxSize().verticalScroll(scroll).padding(bottom = 24.dp)) {
-        Header("${game.name}历史数据", "${draws.size} 期 · 官方来源", syncTime)
+        Header("历史数据", "${game.name} · ${draws.size} 期 · 官方来源数据")
         CardBox {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Column { Label("官方数据同步"); Text(if (syncMessage.isBlank()) "数据更新 · ${syncTime.ifBlank { "尚未同步" }}" else syncMessage, color = Muted, fontSize = 12.sp) }
-                Button(onClick = sync, enabled = !syncing) { Text(if (syncing) "同步中" else "立即更新") }
-            }
+            SyncLine(syncing, syncMessage, syncTime, sync); Spacer(Modifier.height(8.dp))
+            ChipRow(listOf("最近30期", "最近50期", "最近100期", "近1年", "近3年", "近5年", "近10年"), filter) { filter = it }
+            Spacer(Modifier.height(10.dp)); ChipRow(yearOptions, year) { year = it }
+            Spacer(Modifier.height(10.dp)); OutlinedTextField(value = query, onValueChange = { query = it }, label = { Text("查询期号或日期") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp))
+            Text("找到 ${filtered.size} 期", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
         }
-        draws.take(100).forEach { draw ->
+        filtered.forEach { draw ->
             CardBox {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text("${draw.issue}期", color = Ink, fontWeight = FontWeight.Bold)
@@ -507,7 +558,7 @@ private fun History(draws: List<Draw>, syncing: Boolean, message: String, time: 
 }
 
 @Composable
-private fun Smart(draws: List<Draw>, years: Int, amount: Int, mode: String, game: LotteryGame, setYears: (Int) -> Unit, setAmount: (Int) -> Unit,
+private fun Smart(draws: List<Draw>, gameDraws: List<GameDraw>, years: Int, amount: Int, mode: String, game: LotteryGame, setYears: (Int) -> Unit, setAmount: (Int) -> Unit,
                   setMode: (String) -> Unit, generate: () -> Unit, generateFiltered: (TicketFilters) -> Unit, tickets: List<Ticket>) {
     var custom by remember { mutableStateOf(false) }
     var generatePressed by remember { mutableStateOf(false) }
@@ -518,7 +569,8 @@ private fun Smart(draws: List<Draw>, years: Int, amount: Int, mode: String, game
     var oddChoice by remember { mutableStateOf("1–5") }
     var bigChoice by remember { mutableStateOf("1–5") }
     var maxRunsChoice by remember { mutableStateOf("最多2组") }
-    val result = remember(draws, mode, years, game.code) { if (game.code == "ssq") LotteryEngine.backtest(draws, mode, years) else null }
+    val ssqResult = remember(draws, mode, years, game.code) { if (game.code == "ssq") LotteryEngine.backtest(draws, mode, years) else null }
+    val otherResult = remember(gameDraws, mode, years, game.code) { if (game.code != "ssq") LotteryEngine.backtestGame(gameDraws, game, mode, years) else null }
     PageScroll {
         Header("智能选号", "${game.name} · 多模型评分 · 自定义筛选")
         if (tickets.isNotEmpty()) CardBox {
@@ -578,19 +630,25 @@ private fun Smart(draws: List<Draw>, years: Int, amount: Int, mode: String, game
             }
             Text("AI 集成采用本地多因子集成评分，不依赖网络大模型或已训练模型。所有策略仅总结历史特征，不代表中奖概率。", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 8.dp))
         }
-        if (result != null) {
+        if (ssqResult != null) {
             CardBox {
-                Label("历史回测 · 最近 ${result.draws} 期")
-                Text("红球命中 ${result.redHits} 次 · 蓝球命中 ${result.blueHits} 次", color = Ink, fontSize = 14.sp)
-                Text("每期平均命中 ${"%.2f".format(result.meanHits)} 个号码", color = Green, fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp))
-                Text("命中分布：0 个 ${result.hit0}期 · 1 个 ${result.hit1}期 · 2 个 ${result.hit2}期 · 3 个及以上 ${result.hit3Plus}期", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
+                Label("${game.name}历史回测 · 最近 ${ssqResult.draws} 期")
+                Text("红球命中 ${ssqResult.redHits} 次 · 蓝球命中 ${ssqResult.blueHits} 次", color = Ink, fontSize = 14.sp)
+                Text("每期平均命中 ${"%.2f".format(ssqResult.meanHits)} 个号码", color = Green, fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp))
+                Text("命中分布：0 个 ${ssqResult.hit0}期 · 1 个 ${ssqResult.hit1}期 · 2 个 ${ssqResult.hit2}期 · 3 个及以上 ${ssqResult.hit3Plus}期", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
                 Text("逐期向前滚动验证，仅使用当期之前的历史数据。", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 8.dp))
             }
-        } else {
+        } else if (otherResult != null && otherResult.draws > 0) {
             CardBox {
-                Label("${game.name}历史回测")
-                Text("该彩种官方历史数据尚未接入，暂时无法提供真实历史回测。当前组合分仅衡量数字结构。", color = Muted, fontSize = 12.sp)
+                Label("${game.name}历史回测 · 最近 ${otherResult.draws} 期")
+                Text(if (game.digits) "位置号码累计命中 ${otherResult.frontHits} 位" else "前区累计命中 ${otherResult.frontHits} 个 · 后区累计命中 ${otherResult.backHits} 个", color = Ink, fontSize = 14.sp)
+                Text("每期开奖平均命中 ${"%.2f".format(otherResult.meanHits)} 个", color = Green, fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp))
+                Text("完全命中 ${otherResult.exactHits} 期", color = Ink, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
+                Text("命中分布：${otherResult.hitDistribution.toSortedMap().entries.joinToString(" · ") { "${it.key}个 ${it.value}期" }}", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
+                Text("按期滚动验证，只用目标期之前的数据；数字型彩票按位置命中统计。", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 8.dp))
             }
+        } else {
+            CardBox { Label("${game.name}历史回测"); Text("本地历史开奖数据不足，请先在历史数据页同步。", color = Muted, fontSize = 12.sp) }
         }
     }
 }
