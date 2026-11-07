@@ -28,6 +28,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
@@ -51,6 +52,13 @@ private val ThemePalette = listOf(
     "薄荷" to Color(0xFF91C8B0), "浅蓝" to Color(0xFF91B6E3), "薰衣草" to Color(0xFFB4A0D5)
 )
 private data class TicketFilters(val sum: IntRange, val odd: IntRange, val big: IntRange, val maxRuns: Int)
+private fun currentFilters(sumMin: String, sumMax: String, minPossible: Int, maxPossible: Int, oddChoice: String, bigChoice: String, maxRunsChoice: String): TicketFilters {
+    val min = sumMin.toIntOrNull()?.coerceIn(minPossible, maxPossible) ?: minPossible
+    val max = (sumMax.toIntOrNull() ?: maxPossible).coerceIn(min, maxPossible)
+    fun range(choice: String) = when (choice) { "1–5" -> 1..5; "2–4" -> 2..4; "3个" -> 3..3; else -> 0..6 }
+    val maxRuns = when (maxRunsChoice) { "最多1组" -> 1; "最多2组" -> 2; else -> 5 }
+    return TicketFilters(min..max, range(oddChoice), range(bigChoice), maxRuns)
+}
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -83,6 +91,11 @@ fun App(db: LotteryDatabase) {
     var syncing by remember { mutableStateOf(false) }
     var syncMessage by remember { mutableStateOf("") }
     var syncTime by remember { mutableStateOf(context.getSharedPreferences("sync", 0).getString("last_ok", null).orEmpty()) }
+    var doubaoApiKey by remember { mutableStateOf(DoubaoKeyVault.loadOrInitialize(context, BuildConfig.DEFAULT_DOUBAO_API_KEY)) }
+    var doubaoModelId by remember { mutableStateOf(prefs.getString("doubao_model_id", "doubao-seed-2-1-pro-260915") ?: "doubao-seed-2-1-pro-260915") }
+    var doubaoBusy by remember { mutableStateOf(false) }
+    var doubaoMessage by remember { mutableStateOf("") }
+    var doubaoReason by remember { mutableStateOf("") }
     val historyScroll = rememberScrollState()
     val pinnedTicket = remember(draws, gameDraws, selectedGameCode) {
         val latestIssue = if (selectedGame.code == "ssq") draws.firstOrNull()?.issue else gameDraws.firstOrNull()?.issue
@@ -171,7 +184,31 @@ fun App(db: LotteryDatabase) {
                     else -> Smart(draws, gameDraws, years, amount, mode, selectedGame, { years = it }, { amount = it }, { mode = it },
                         { smartTickets = LotteryEngine.generateForGame(draws, amount, years, mode, selectedGame) },
                         { filters -> smartTickets = LotteryEngine.generateForGame(draws, amount, years, mode, selectedGame, sumRange = filters.sum, oddRange = filters.odd, bigRange = filters.big, maxConsecutivePairs = filters.maxRuns) },
-                        smartTickets)
+                        smartTickets, doubaoApiKey, { doubaoApiKey = it }, doubaoModelId, { doubaoModelId = it },
+                        { key, model -> doubaoApiKey = key; doubaoModelId = model; DoubaoKeyVault.save(context, key); prefs.edit().putString("doubao_model_id", model).apply(); doubaoMessage = "豆包配置已安全保存" },
+                        doubaoBusy, doubaoMessage, doubaoReason,
+                        { filters ->
+                            if (doubaoBusy) return@Smart
+                            if (doubaoApiKey.isBlank()) { doubaoMessage = "请先填写豆包 API Key 并保存"; return@Smart }
+                            doubaoBusy = true; doubaoMessage = "正在根据历史数据请求豆包分析…"; doubaoReason = ""
+                            scope.launch {
+                                val history = if (selectedGame.code == "ssq") draws.map { GameDraw("ssq", it.issue, it.date, it.reds, listOf(it.blue)) } else gameDraws
+                                val result = withContext(Dispatchers.IO) { runCatching {
+                                    val frontMin = if (filters?.sum != null) filters.sum.first else Int.MIN_VALUE
+                                    val frontMax = if (filters?.sum != null) filters.sum.last else Int.MAX_VALUE
+                                    val candidates = LotteryEngine.generateForGame(draws, 40, years, "AI集成", selectedGame,
+                                        sumRange = frontMin..frontMax,
+                                        oddRange = filters?.odd ?: 0..6,
+                                        bigRange = filters?.big ?: 0..6,
+                                        maxConsecutivePairs = filters?.maxRuns ?: 5,
+                                        candidatePoolMultiplier = 4)
+                                    DoubaoLotteryClient.generate(selectedGame, history, candidates, amount, years, mode, doubaoModelId, doubaoApiKey)
+                                } }
+                                result.onSuccess { picked -> smartTickets = picked.tickets; doubaoReason = picked.reasoning; doubaoMessage = "豆包选号完成 · ${picked.tickets.size} 组" }
+                                    .onFailure { doubaoMessage = "豆包选号失败：${it.message?.take(100) ?: "网络或配置错误"}" }
+                                doubaoBusy = false
+                            }
+                        })
                 }
             }
         }
@@ -559,7 +596,10 @@ private fun History(draws: List<Draw>, syncing: Boolean, message: String, time: 
 
 @Composable
 private fun Smart(draws: List<Draw>, gameDraws: List<GameDraw>, years: Int, amount: Int, mode: String, game: LotteryGame, setYears: (Int) -> Unit, setAmount: (Int) -> Unit,
-                  setMode: (String) -> Unit, generate: () -> Unit, generateFiltered: (TicketFilters) -> Unit, tickets: List<Ticket>) {
+                  setMode: (String) -> Unit, generate: () -> Unit, generateFiltered: (TicketFilters) -> Unit, tickets: List<Ticket>,
+                  apiKey: String, setApiKey: (String) -> Unit, modelId: String, setModelId: (String) -> Unit,
+                  saveAiConfig: (String, String) -> Unit, aiBusy: Boolean, aiMessage: String, aiReason: String,
+                  generateDoubao: (TicketFilters?) -> Unit) {
     var custom by remember { mutableStateOf(false) }
     var generatePressed by remember { mutableStateOf(false) }
     val minPossibleSum = if (game.digits) 0 else game.frontCount * (game.frontCount + 1) / 2
@@ -573,6 +613,23 @@ private fun Smart(draws: List<Draw>, gameDraws: List<GameDraw>, years: Int, amou
     val otherResult = remember(gameDraws, mode, years, game.code) { if (game.code != "ssq") LotteryEngine.backtestGame(gameDraws, game, mode, years) else null }
     PageScroll {
         Header("智能选号", "${game.name} · 多模型评分 · 自定义筛选")
+        CardBox {
+            Label("豆包大模型选号")
+            Text("豆包会根据本地历史频率、近期走势和候选号码池进行筛选。只有点击选号时才会调用 API，模型调用可能消耗方舟账户额度。", color = Muted, fontSize = 12.sp)
+            OutlinedTextField(value = modelId, onValueChange = setModelId, label = { Text("豆包模型 ID") }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
+            OutlinedTextField(value = apiKey, onValueChange = setApiKey, label = { Text("火山方舟 API Key") }, singleLine = true,
+                visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
+            Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.End) {
+                TextButton(onClick = { saveAiConfig(apiKey.trim(), modelId.trim()) }, enabled = !aiBusy) { Text("加密保存配置") }
+            }
+            Button(onClick = { generateDoubao(if (custom) currentFilters(sumMin, sumMax, minPossibleSum, maxPossibleSum, oddChoice, bigChoice, maxRunsChoice) else null) },
+                enabled = !aiBusy, modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(15.dp)) {
+                Text(if (aiBusy) "豆包正在分析…" else "✦  豆包 AI 分析并生成 $amount 组")
+            }
+            if (aiMessage.isNotBlank()) Text(aiMessage, color = if (aiMessage.startsWith("豆包选号失败")) Red else Green, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
+            if (aiReason.isNotBlank()) Text("模型分析：$aiReason", color = Ink, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
+            Text("密钥使用 Android Keystore 加密保存在本机，不写入项目源码。", color = Muted, fontSize = 10.sp, modifier = Modifier.padding(top = 8.dp))
+        }
         if (tickets.isNotEmpty()) CardBox {
             Label("本次候选 · ${tickets.size} 组")
             tickets.forEachIndexed { index, ticket ->
