@@ -31,6 +31,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.time.LocalDate
@@ -45,6 +46,7 @@ private val Red = Color(0xFFE65B62)
 private val Blue = Color(0xFF4B83D7)
 private val Amber = Color(0xFFE3B45E)
 private val ModelOptions = listOf("AI集成", "综合模型", "近期趋势", "热号优先", "冷热搭配", "遗漏反转", "均衡型", "分区均衡")
+private data class TicketFilters(val sum: IntRange, val odd: IntRange, val big: IntRange, val maxRuns: Int)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -74,10 +76,10 @@ fun App(db: LotteryDatabase) {
     val historyScroll = rememberScrollState()
     val pinnedTicket = remember(draws) {
         if (draws.isEmpty()) null else {
-            val pinnedKey = "pinned_candidate_${draws.first().issue}"
+            val pinnedKey = "pinned_ai_candidate_${draws.first().issue}"
             val saved = prefs.getString(pinnedKey, null)
             val restored = saved?.let(::parseTicket)
-            restored ?: LotteryEngine.generate(draws, 1, 1, "综合模型").first().also { ticket ->
+            restored ?: LotteryEngine.generate(draws, 1, 1, "AI集成").first().also { ticket ->
                 prefs.edit().putString(pinnedKey, serializeTicket(ticket)).apply()
             }
         }
@@ -93,7 +95,11 @@ fun App(db: LotteryDatabase) {
                 draws = db.readAll()
                 syncTime = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.CHINA).format(java.util.Date())
                 context.getSharedPreferences("sync", 0).edit().putString("last_ok", syncTime).apply()
-                syncMessage = "同步成功 · 更新 $updated 期"
+                val success = "同步成功 · 更新 $updated 期"
+                syncMessage = success
+                syncing = false
+                delay(4000)
+                if (syncMessage == success) syncMessage = ""
             }.onFailure { syncMessage = "同步失败：${it.message?.take(70) ?: "网络连接错误"}" }
             syncing = false
         }
@@ -101,9 +107,9 @@ fun App(db: LotteryDatabase) {
 
     MaterialTheme(colorScheme = lightColorScheme(primary = Green, background = CanvasBg, surface = Color.White)) {
         Scaffold(
-            containerColor = CanvasBg,
+            containerColor = Color.Transparent,
             bottomBar = {
-                Box(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 20.dp, vertical = 5.dp), contentAlignment = Alignment.Center) {
+                Box(Modifier.fillMaxWidth().background(Color.Transparent).navigationBarsPadding().padding(horizontal = 20.dp, vertical = 5.dp), contentAlignment = Alignment.Center) {
                     Row(
                         Modifier.fillMaxWidth().height(54.dp).shadow(12.dp, RoundedCornerShape(30.dp))
                             .clip(RoundedCornerShape(30.dp)).background(Color.White.copy(alpha = .84f))
@@ -141,7 +147,7 @@ fun App(db: LotteryDatabase) {
                 }
             }
         ) { inset ->
-            Box(Modifier.fillMaxSize().padding(inset)) {
+            Box(Modifier.fillMaxSize().background(CanvasBg).padding(inset)) {
                 when (page) {
                     0 -> Home(draws, pinnedTicket, homeQuick, years, amount, mode,
                         { years = it }, { amount = it }, { mode = it },
@@ -150,7 +156,7 @@ fun App(db: LotteryDatabase) {
                     2 -> History(draws, syncing, syncMessage, syncTime, ::sync, historyScroll)
                     else -> Smart(draws, years, amount, mode, { years = it }, { amount = it }, { mode = it },
                         { smartTickets = LotteryEngine.generate(draws, amount, years, mode) },
-                        { min, max -> smartTickets = LotteryEngine.generate(draws, amount, years, mode, sumRange = min..max, oddRange = 0..6) },
+                        { filters -> smartTickets = LotteryEngine.generate(draws, amount, years, mode, sumRange = filters.sum, oddRange = filters.odd, bigRange = filters.big, maxConsecutivePairs = filters.maxRuns) },
                         smartTickets)
                 }
             }
@@ -167,8 +173,12 @@ private fun PageScroll(content: @Composable ColumnScope.() -> Unit) {
 private fun Header(title: String, subtitle: String? = null, timestamp: String? = null) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 18.dp)) {
         Text(title, fontSize = 27.sp, fontWeight = FontWeight.ExtraBold, color = Ink)
-        if (subtitle != null) Text(subtitle, fontSize = 13.sp, color = Muted, modifier = Modifier.padding(top = 4.dp))
-        if (timestamp != null) Text("数据更新 · ${timestamp.ifBlank { "待同步" }}", fontSize = 11.sp, color = Green, modifier = Modifier.padding(top = 6.dp))
+        if (subtitle != null && timestamp != null) {
+            Row(Modifier.fillMaxWidth().padding(top = 5.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text(subtitle, fontSize = 12.sp, color = Muted)
+                Text("数据更新 · ${timestamp.ifBlank { "待同步" }}", fontSize = 11.sp, color = Green)
+            }
+        } else if (subtitle != null) Text(subtitle, fontSize = 13.sp, color = Muted, modifier = Modifier.padding(top = 4.dp))
     }
 }
 
@@ -231,6 +241,17 @@ private fun Home(draws: List<Draw>, pinned: Ticket?, quick: List<Ticket>, years:
             } else Text("历史数据准备中", color = Muted)
         }
         CardBox {
+            Label("开奖信息")
+            Text("双色球 · 通常每周二、四、日开奖", color = Ink, fontSize = 13.sp)
+            Text("下期开奖日：$nextDate", color = Green, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, modifier = Modifier.padding(top = 5.dp))
+            HorizontalDivider(Modifier.padding(vertical = 14.dp), color = Color(0xFFEDF1EE))
+            if (draws.isNotEmpty()) {
+                val draw = draws.first()
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("最近一期官方开奖", color = Ink, fontWeight = FontWeight.Bold); Text("${draw.date} · ${draw.issue}期", color = Muted, fontSize = 12.sp) }
+                Spacer(Modifier.height(12.dp)); Numbers(draw.reds, draw.blue, true)
+            } else Text("官方历史数据待同步", color = Muted)
+        }
+        CardBox {
             Label("快速生成")
             Row(verticalAlignment = Alignment.CenterVertically) { Text("数据窗口", color = Muted, fontSize = 13.sp); Spacer(Modifier.width(10.dp)); ChipRow((1..10).map { "${it}年" }, "${years}年") { setYears(it.dropLast(1).toInt()) } }
             Spacer(Modifier.height(11.dp))
@@ -250,17 +271,6 @@ private fun Home(draws: List<Draw>, pinned: Ticket?, quick: List<Ticket>, years:
                     Text("结构评分 ${ticket.score}", color = Muted, fontSize = 10.sp, modifier = Modifier.align(Alignment.End).padding(top = 4.dp))
                 }
             }
-        }
-        CardBox {
-            Label("开奖信息")
-            Text("双色球 · 通常每周二、四、日开奖", color = Ink, fontSize = 13.sp)
-            Text("下期开奖日：$nextDate", color = Green, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, modifier = Modifier.padding(top = 5.dp))
-            HorizontalDivider(Modifier.padding(vertical = 14.dp), color = Color(0xFFEDF1EE))
-            if (draws.isNotEmpty()) {
-                val draw = draws.first()
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("最近一期官方开奖", color = Ink, fontWeight = FontWeight.Bold); Text("${draw.issue} 期 · ${draw.date}", color = Muted, fontSize = 12.sp) }
-                Spacer(Modifier.height(12.dp)); Numbers(draw.reds, draw.blue, true)
-            } else Text("官方历史数据待同步", color = Muted)
         }
         Text("彩票开奖结果具有随机性，统计与历史回测不代表未来中奖概率。", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
     }
@@ -374,10 +384,13 @@ private fun History(draws: List<Draw>, syncing: Boolean, message: String, time: 
 
 @Composable
 private fun Smart(draws: List<Draw>, years: Int, amount: Int, mode: String, setYears: (Int) -> Unit, setAmount: (Int) -> Unit,
-                  setMode: (String) -> Unit, generate: () -> Unit, generateFiltered: (Int, Int) -> Unit, tickets: List<Ticket>) {
+                  setMode: (String) -> Unit, generate: () -> Unit, generateFiltered: (TicketFilters) -> Unit, tickets: List<Ticket>) {
     var custom by remember { mutableStateOf(false) }
     var sumMin by remember { mutableStateOf("60") }
     var sumMax by remember { mutableStateOf("150") }
+    var oddChoice by remember { mutableStateOf("1–5") }
+    var bigChoice by remember { mutableStateOf("1–5") }
+    var maxRunsChoice by remember { mutableStateOf("最多2组") }
     val result = remember(draws, mode, years) { LotteryEngine.backtest(draws, mode, years) }
     PageScroll {
         Header("智能选号", "多模型评分 · 历史回测 · 自定义筛选")
@@ -396,13 +409,30 @@ private fun Smart(draws: List<Draw>, years: Int, amount: Int, mode: String, setY
             Text("策略", color = Muted, fontSize = 12.sp); Spacer(Modifier.height(7.dp)); ChipRow(ModelOptions, mode, setMode)
             Spacer(Modifier.height(13.dp)); Text("数据窗口", color = Muted, fontSize = 12.sp); Spacer(Modifier.height(7.dp)); ChipRow((1..10).map { "${it}年" }, "${years}年") { setYears(it.dropLast(1).toInt()) }
             Spacer(Modifier.height(13.dp)); Text("候选组数", color = Muted, fontSize = 12.sp); Spacer(Modifier.height(7.dp)); ChipRow((1..10).map { "${it}组" }, "${amount}组") { setAmount(it.dropLast(1).toInt()) }
-            Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(custom, { custom = it }); Text("启用和值筛选", color = Ink, fontSize = 13.sp) }
-            if (custom) Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(sumMin, { sumMin = it }, label = { Text("和值最小") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f), singleLine = true)
-                OutlinedTextField(sumMax, { sumMax = it }, label = { Text("和值最大") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f), singleLine = true)
+            Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(custom, { custom = it }); Text("启用自定义筛选", color = Ink, fontSize = 13.sp) }
+            if (custom) {
+                Text("红球和值（21–183）", color = Muted, fontSize = 12.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(top = 6.dp)) {
+                    OutlinedTextField(sumMin, { sumMin = it }, label = { Text("最小值") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f), singleLine = true)
+                    OutlinedTextField(sumMax, { sumMax = it }, label = { Text("最大值") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f), singleLine = true)
+                }
+                Text("奇数红球个数", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 12.dp, bottom = 6.dp))
+                ChipRow(listOf("不限", "1–5", "2–4", "3个"), oddChoice) { oddChoice = it }
+                Text("大号（17–33）个数", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 12.dp, bottom = 6.dp))
+                ChipRow(listOf("不限", "1–5", "2–4", "3个"), bigChoice) { bigChoice = it }
+                Text("连续号上限", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 12.dp, bottom = 6.dp))
+                ChipRow(listOf("不限", "最多1组", "最多2组"), maxRunsChoice) { maxRunsChoice = it }
             }
             Spacer(Modifier.height(10.dp))
-            Button(onClick = { if (custom) { val min = sumMin.toIntOrNull()?.coerceIn(21, 183) ?: 60; val max = sumMax.toIntOrNull()?.coerceIn(min, 183) ?: 150; generateFiltered(min, max) } else generate() },
+            Button(onClick = {
+                if (custom) {
+                    val min = sumMin.toIntOrNull()?.coerceIn(21, 183) ?: 60
+                    val max = (sumMax.toIntOrNull() ?: 150).coerceIn(min, 183)
+                    fun range(choice: String) = when (choice) { "1–5" -> 1..5; "2–4" -> 2..4; "3个" -> 3..3; else -> 0..6 }
+                    val maxRuns = when (maxRunsChoice) { "最多1组" -> 1; "最多2组" -> 2; else -> 5 }
+                    generateFiltered(TicketFilters(min..max, range(oddChoice), range(bigChoice), maxRuns))
+                } else generate()
+            },
                 modifier = Modifier.fillMaxWidth().height(50.dp), shape = RoundedCornerShape(15.dp)) { Text("生成 $amount 组候选", fontWeight = FontWeight.Bold) }
         }
         CardBox {
