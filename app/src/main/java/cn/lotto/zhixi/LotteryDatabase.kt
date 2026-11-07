@@ -1,0 +1,57 @@
+package cn.lotto.zhixi
+
+import android.content.Context
+import android.database.sqlite.SQLiteDatabase
+import android.database.sqlite.SQLiteOpenHelper
+import org.json.JSONArray
+import java.io.BufferedReader
+import java.util.zip.GZIPInputStream
+
+class LotteryDatabase(context: Context) : SQLiteOpenHelper(context, "shuangseqiu.db", null, 1) {
+    override fun onCreate(db: SQLiteDatabase) {
+        db.execSQL("CREATE TABLE draws (issue TEXT PRIMARY KEY NOT NULL, date TEXT NOT NULL, reds TEXT NOT NULL, blue INTEGER NOT NULL, source TEXT NOT NULL DEFAULT 'cwl.gov.cn')")
+        db.execSQL("CREATE INDEX draws_date_idx ON draws(date DESC)")
+    }
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+
+    fun importAssetIfEmpty(context: Context): Int {
+        if (readAll().isNotEmpty()) return 0
+        val text = context.assets.open("ssq_history.json.gz").use { input -> GZIPInputStream(input).bufferedReader(Charsets.UTF_8).readText() }
+        val rows = JSONArray(text)
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            for (i in 0 until rows.length()) {
+                val row = rows.getJSONObject(i)
+                db.execSQL("INSERT OR IGNORE INTO draws(issue,date,reds,blue,source) VALUES(?,?,?,?,?)", arrayOf(row.getString("issue"), row.getString("date"), (0 until row.getJSONArray("reds").length()).joinToString(",") { row.getJSONArray("reds").getInt(it).toString() }, row.getInt("blue"), "cwl.gov.cn"))
+            }
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
+        return rows.length()
+    }
+
+    fun upsert(draws: List<Draw>): Int {
+        val db = writableDatabase
+        var changed = 0
+        db.beginTransaction()
+        try {
+            draws.forEach { draw ->
+                db.execSQL("INSERT OR REPLACE INTO draws(issue,date,reds,blue,source) VALUES(?,?,?,?,?)", arrayOf<Any>(draw.issue, draw.date, draw.reds.joinToString(","), draw.blue, "cwl.gov.cn"))
+                changed++
+            }
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
+        return changed
+    }
+
+    fun readAll(): List<Draw> {
+        val output = ArrayList<Draw>()
+        readableDatabase.rawQuery("SELECT issue,date,reds,blue FROM draws ORDER BY issue DESC", null).use { cursor ->
+            while (cursor.moveToNext()) output += Draw(cursor.getString(0), cursor.getString(1), cursor.getString(2).split(',').map(String::toInt), cursor.getInt(3))
+        }
+        return output
+    }
+}
+
+
+
