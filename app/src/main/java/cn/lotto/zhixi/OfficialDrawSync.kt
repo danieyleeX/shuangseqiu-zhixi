@@ -16,9 +16,19 @@ import java.net.URL
 import java.util.concurrent.TimeUnit
 
 class OfficialDrawSync(private val database: LotteryDatabase) {
-    fun syncLatest(): Int {
+    fun syncLatest(): Int = syncAll()
+    fun syncAll(): Int {
+        var total = 0
+        total += syncWelfare("ssq", "ssq")
+        total += syncWelfare("fc3d", "3d")
+        total += syncSport("dlt", "85")
+        total += syncSport("pl3", "35")
+        total += syncSport("pl5", "36")
+        return total
+    }
+    private fun syncWelfare(gameCode: String, apiName: String): Int {
         val home = "https://www.cwl.gov.cn/ygkj/wqkjgg/ssq/"
-        val url = URL("https://www.cwl.gov.cn/cwl_admin/front/cwlkj/search/kjxx/findDrawNotice?name=ssq&issueCount=100&pageNo=1&pageSize=100&systemType=PC")
+        val url = URL("https://www.cwl.gov.cn/cwl_admin/front/cwlkj/search/kjxx/findDrawNotice?name=$apiName&issueCount=100&pageNo=1&pageSize=100&systemType=PC")
         val connection = (url.openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"; connectTimeout = 15_000; readTimeout = 20_000
             setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/131.0 Mobile Safari/537.36")
@@ -35,13 +45,49 @@ class OfficialDrawSync(private val database: LotteryDatabase) {
             val parsed = buildList {
                 for (i in 0 until rows.length()) {
                     val row = rows.getJSONObject(i)
-                    val reds = row.getString("red").split(',').map(String::trim).map(String::toInt).sorted()
-                    val blue = row.getString("blue").trim().toInt()
-                    require(row.getString("code").matches(Regex("\\d{7}")) && reds.size == 6 && reds.distinct().size == 6 && reds.all { it in 1..33 } && blue in 1..16) { "官方数据格式校验失败：${row.optString("code")}" }
-                    add(Draw(row.getString("code"), row.getString("date").substringBefore('('), reds, blue))
+                    val issue = row.getString("code")
+                    val date = row.getString("date").substringBefore('(')
+                    if (gameCode == "ssq") {
+                        val reds = row.getString("red").split(',').map(String::trim).map(String::toInt).sorted()
+                        val blue = row.getString("blue").trim().toInt()
+                        require(issue.matches(Regex("\\d{7}")) && reds.size == 6 && reds.distinct().size == 6 && reds.all { it in 1..33 } && blue in 1..16) { "双色球官方数据校验失败：$issue" }
+                        add(GameDraw("ssq", issue, date, reds, listOf(blue)))
+                    } else {
+                        val digits = row.optString("red", row.optString("result")).filter(Char::isDigit).map { it.digitToInt() }
+                        require(issue.isNotBlank() && digits.size == 3) { "福彩3D官方数据格式校验失败：$issue" }
+                        add(GameDraw("fc3d", issue, date, digits))
+                    }
                 }
             }
-            return database.upsert(parsed)
+            if (gameCode == "ssq") database.upsert(parsed.map { Draw(it.issue,it.date,it.front,it.back.first()) })
+            return database.upsertGame(parsed, "cwl.gov.cn")
+        } finally { connection.disconnect() }
+    }
+    private fun syncSport(gameCode: String, gameNo: String): Int {
+        val url = URL("https://webapi.sporttery.cn/gateway/lottery/getHistoryPageListV1.qry?gameNo=$gameNo&provinceId=0&pageSize=100&isVerify=1&pageNo=1")
+        val connection = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"; connectTimeout = 15_000; readTimeout = 20_000
+            setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/131.0 Mobile Safari/537.36")
+            setRequestProperty("Accept", "application/json")
+            setRequestProperty("Referer", "https://m.lottery.gov.cn/zst/tbsj/")
+        }
+        try {
+            if (connection.responseCode !in 200..299) error("中国体彩网返回 HTTP ${connection.responseCode}")
+            val root = JSONObject(connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() })
+            val list = root.optJSONObject("value")?.optJSONArray("list") ?: error("中国体彩网没有返回${gameCode}开奖列表")
+            val rows = buildList {
+                for (i in 0 until list.length()) {
+                    val row = list.getJSONObject(i)
+                    val raw = row.optString("lotteryDrawResult").trim()
+                    val nums = Regex("\\d+").findAll(raw).map { it.value.toInt() }.toList()
+                    val frontCount = if (gameCode == "dlt") 5 else if (gameCode == "pl3") 3 else 5
+                    val expected = if (gameCode == "dlt") 7 else frontCount
+                    if (nums.size < expected) continue
+                    add(GameDraw(gameCode, row.optString("lotteryDrawNum"), row.optString("lotteryDrawTime").take(10), nums.take(frontCount), nums.drop(frontCount).take(if (gameCode == "dlt") 2 else 0)))
+                }
+            }
+            require(rows.isNotEmpty()) { "中国体彩网${gameCode}开奖数据为空或格式变化" }
+            return database.upsertGame(rows, "lottery.gov.cn")
         } finally { connection.disconnect() }
     }
 }
@@ -55,5 +101,5 @@ class DrawSyncWorker(context: Context, params: WorkerParameters) : CoroutineWork
 fun scheduleDrawSync(context: Context) {
     val request = PeriodicWorkRequestBuilder<DrawSyncWorker>(12, TimeUnit.HOURS)
         .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()).build()
-    WorkManager.getInstance(context).enqueueUniquePeriodicWork("official-ssq-sync", ExistingPeriodicWorkPolicy.KEEP, request)
+    WorkManager.getInstance(context).enqueueUniquePeriodicWork("official-multi-lottery-sync", ExistingPeriodicWorkPolicy.KEEP, request)
 }
