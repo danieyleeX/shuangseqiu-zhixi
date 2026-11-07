@@ -4,7 +4,26 @@ import kotlin.math.abs
 import kotlin.random.Random
 
 data class Draw(val issue: String, val date: String, val reds: List<Int>, val blue: Int)
-data class Ticket(val reds: List<Int>, val blue: Int, val score: Int)
+data class Ticket(
+    val reds: List<Int>,
+    val blue: Int,
+    val score: Int,
+    val gameCode: String = "ssq",
+    val secondary: List<Int> = listOf(blue)
+)
+
+data class LotteryGame(val code: String, val name: String, val frontCount: Int, val frontMax: Int, val backCount: Int = 0, val backMax: Int = 0, val digits: Boolean = false)
+
+object LotteryGames {
+    val all = listOf(
+        LotteryGame("ssq", "双色球", 6, 33, 1, 16),
+        LotteryGame("dlt", "超级大乐透", 5, 35, 2, 12),
+        LotteryGame("fc3d", "福彩3D", 3, 9, digits = true),
+        LotteryGame("pl3", "排列三", 3, 9, digits = true),
+        LotteryGame("pl5", "排列五", 5, 9, digits = true)
+    )
+    fun byCode(code: String) = all.firstOrNull { it.code == code } ?: all.first()
+}
 data class BacktestResult(val draws: Int, val redHits: Int, val blueHits: Int, val hit0: Int, val hit1: Int, val hit2: Int, val hit3Plus: Int) {
     val meanHits: Double get() = if (draws == 0) 0.0 else (redHits + blueHits).toDouble() / draws
 }
@@ -29,14 +48,16 @@ object LotteryEngine {
         oddRange: IntRange = 0..6,
         bigRange: IntRange = 0..6,
         maxConsecutivePairs: Int = 5,
+        candidatePoolMultiplier: Int = 6,
         seed: Long = System.nanoTime()
     ): List<Ticket> {
         require(count in 1..10)
+        require(candidatePoolMultiplier in 1..500)
         val data = window(draws, years)
         val redFreq = frequency(data); val blueFreq = blueFrequency(data); val miss = misses(data)
         val recent = data.take(30); val recentFreq = frequency(recent)
         val max = redFreq.maxOrNull()?.coerceAtLeast(1) ?: 1
-        val targetPool = if (mode == "AI集成") count * 6 else count
+        val targetPool = if (mode == "AI集成") count * candidatePoolMultiplier else count
         val pool = mutableListOf<Ticket>(); val seen = mutableSetOf<String>(); val rng = Random(seed)
         var attempts = 0
         while(pool.size < targetPool && attempts++ < targetPool * 1200) {
@@ -68,6 +89,53 @@ object LotteryEngine {
             if (seen.add(key)) pool += Ticket(reds, blue, score(data, reds, blue))
         }
         return pool.sortedByDescending { it.score }.take(count)
+    }
+
+    fun generateForGame(
+        draws: List<Draw>, count: Int, years: Int, mode: String, game: LotteryGame,
+        sumRange: IntRange = Int.MIN_VALUE..Int.MAX_VALUE, oddRange: IntRange = 0..6, bigRange: IntRange = 0..6,
+        maxConsecutivePairs: Int = 5, candidatePoolMultiplier: Int = 6, seed: Long = System.nanoTime()
+    ): List<Ticket> {
+        require(candidatePoolMultiplier in 1..500)
+        if (game.code == "ssq") return generate(draws, count, years, mode, sumRange, oddRange, bigRange, maxConsecutivePairs, candidatePoolMultiplier, seed)
+        require(count in 1..10)
+        val rng = Random(seed)
+        val target = count * if (mode == "AI集成") candidatePoolMultiplier else 1
+        val candidates = LinkedHashMap<String, Ticket>()
+        val maxAttempts = target * 500
+        var attempts = 0
+        while (candidates.size < target && attempts++ < maxAttempts) {
+            val front = if (game.digits) List(game.frontCount) { rng.nextInt(0, 10) }
+                else (1..game.frontMax).shuffled(rng).take(game.frontCount).sorted()
+            val secondary = if (game.backCount > 0) (1..game.backMax).shuffled(rng).take(game.backCount).sorted() else emptyList()
+            val sum = front.sum()
+            val odd = front.count { it % 2 == 1 }
+            val bigThreshold = if (game.digits) 5 else if (game.code == "dlt") 18 else 17
+            val big = front.count { it >= bigThreshold }
+            val runs = front.distinct().sorted().zipWithNext().count { (a, b) -> b == a + 1 }
+            if (sum !in sumRange || odd !in oddRange || big !in bigRange || runs > maxConsecutivePairs) continue
+            val key = front.joinToString("") + "+" + secondary.joinToString("")
+            if (candidates.containsKey(key)) continue
+            val score = gameStructureScore(front, secondary, game)
+            candidates[key] = Ticket(front, secondary.firstOrNull() ?: 0, score, game.code, secondary)
+        }
+        return candidates.values.sortedByDescending { it.score }.take(count)
+    }
+
+    private fun gameStructureScore(front: List<Int>, secondary: List<Int>, game: LotteryGame): Int {
+        val score = if (game.digits) {
+            val targetSum = front.size * 4.5
+            val duplicates = front.size - front.distinct().size
+            val odd = front.count { it % 2 == 1 }
+            100.0 - abs(front.sum() - targetSum) * 3.0 - abs(odd - front.size / 2.0) * 8.0 - duplicates * 5.0
+        } else {
+            val targetSum = game.frontCount * (game.frontMax + 1) / 2.0
+            val odd = front.count { it % 2 == 1 }
+            val consecutive = front.zipWithNext().count { (a, b) -> b == a + 1 }
+            val secondaryBalance = if (secondary.isEmpty()) 0.0 else abs(secondary.sum() - secondary.size * (game.backMax + 1) / 2.0)
+            100.0 - abs(front.sum() - targetSum) * 0.7 - abs(odd - game.frontCount / 2.0) * 8.0 - consecutive * 7.0 - secondaryBalance * 0.8
+        }
+        return score.toInt().coerceIn(0, 100)
     }
 
     private fun weightedSample(rng: Random, freq: IntArray, recentFreq: IntArray, miss: IntArray, max: Int, mode: String): List<Int> {
