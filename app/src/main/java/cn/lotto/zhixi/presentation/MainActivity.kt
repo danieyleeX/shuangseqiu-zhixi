@@ -150,11 +150,11 @@ fun App(db: LotteryDatabase) {
         Scaffold(
             containerColor = Color.Transparent,
             bottomBar = {
-                Box(Modifier.fillMaxWidth().background(Color.Transparent).navigationBarsPadding().padding(horizontal = 20.dp, vertical = 5.dp), contentAlignment = Alignment.Center) {
+                Box(Modifier.fillMaxWidth().background(Color.Transparent).navigationBarsPadding().padding(horizontal = 20.dp, vertical = 3.dp), contentAlignment = Alignment.Center) {
                     Row(
-                        Modifier.fillMaxWidth().height(54.dp).shadow(12.dp, RoundedCornerShape(30.dp))
-                            .clip(RoundedCornerShape(30.dp)).background(Color.White.copy(alpha = .84f))
-                            .border(1.dp, Color.White.copy(alpha = .95f), RoundedCornerShape(30.dp)).padding(horizontal = 5.dp, vertical = 4.dp),
+                        Modifier.fillMaxWidth().height(46.dp).shadow(10.dp, RoundedCornerShape(24.dp))
+                            .clip(RoundedCornerShape(24.dp)).background(Color.White.copy(alpha = .84f))
+                            .border(1.dp, Color.White.copy(alpha = .95f), RoundedCornerShape(24.dp)).padding(horizontal = 5.dp, vertical = 4.dp),
                         horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically
                     ) {
                     val labels = listOf("首页", "数据分析", "历史数据", "智能选号")
@@ -173,9 +173,7 @@ fun App(db: LotteryDatabase) {
                             contentAlignment = Alignment.Center
                         ) {
                             if (selected) {
-                                Box(Modifier.size(44.dp).background(Green.copy(alpha = .16f), CircleShape), contentAlignment = Alignment.Center) {
-                                    Icon(painterResource(if (historyReturn) R.drawable.ic_nav_top else icons[index]), contentDescription = if (historyReturn) "回到顶部" else label, tint = Green, modifier = Modifier.size(27.dp))
-                                }
+                                Icon(painterResource(if (historyReturn) R.drawable.ic_nav_top else icons[index]), contentDescription = if (historyReturn) "回到顶部" else label, tint = Green, modifier = Modifier.size(23.dp))
                             } else {
                                 Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
                                     Icon(painterResource(icons[index]), contentDescription = label, tint = Muted, modifier = Modifier.size(18.dp))
