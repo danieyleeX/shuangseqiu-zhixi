@@ -90,7 +90,7 @@ object DoubaoLotteryClient {
         }
 
         val candidateJson = JSONArray().apply {
-            candidates.forEachIndexed { index, ticket ->
+            candidates.take(30).forEachIndexed { index, ticket ->
                 put(JSONObject()
                     .put("id", index)
                     .put("front", JSONArray(ticket.reds))
@@ -107,81 +107,88 @@ object DoubaoLotteryClient {
             .put("strategy", strategy)
             .put("candidate_pool", candidateJson)
 
-        val prompt = """
-从候选池 candidate_pool 抽样选出 $count 组样本 id，优先选择分布均衡的样本。
-仅使用池内已有 id，不可编造 id。
-输出强制规则：只返回标准 JSON，禁止 markdown、注释、额外文字。
-格式：{"selected_ids":[id0,id1...], "reason":"均衡说明"}
-统计数据：$stats
-        """.trimIndent()
+        val prompt = "请从给定的 candidate_pool 候选池中，精选 $count 组代表性编号 id，优先选择高分且分布均衡的组合。只能从 candidate_pool 中选择已有的 id，不能修改号码。严格只返回纯 JSON：{\"selected_ids\":[id0,id1...],\"reason\":\"说明\"}。数据：$stats"
 
-        val body = JSONObject()
-            .put("model", modelId)
-            .put("stream", false)
-            .put("temperature", 0.1)
-            .put("max_completion_tokens", 1000)
-            .put("messages", JSONArray()
-                .put(JSONObject().put("role", "system").put("content", "你是一个只输出纯 JSON 的数据分析助手。从给定的 candidate_pool 候选池中选择 $count 组候选 ID。必须严格输出符合格式的纯 JSON，格式为：{\"selected_ids\":[0,1,2],\"reason\":\"说明文字\"}。绝对禁止使用 Markdown 标记（如 ```json）、禁止包含任何前言、后语或 Markdown 解释。"))
-                .put(JSONObject().put("role", "user").put("content", prompt))
-            )
-
-        val connection = (URL("https://ark.cn-beijing.volces.com/api/v3/chat/completions").openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"
-            connectTimeout = 15_000
-            readTimeout = 90_000
-            doOutput = true
-            setRequestProperty("Authorization", "Bearer $apiKey")
-            setRequestProperty("Content-Type", "application/json; charset=utf-8")
-            setRequestProperty("Accept", "application/json")
+        fun createRequestBody(disableThinking: Boolean) = JSONObject().apply {
+            put("model", modelId)
+            put("stream", false)
+            put("temperature", 0.1)
+            put("max_completion_tokens", 1500)
+            if (disableThinking) {
+                put("thinking", JSONObject().put("type", "disabled"))
+            }
+            put("messages", JSONArray().apply {
+                put(JSONObject().put("role", "system").put("content", "你是一个只输出纯 JSON 的数据分析助手。你的任务是从候选池中挑选 $count 组最优质的候选 ID。必须严格输出合法 JSON：{\"selected_ids\":[0,1,2],\"reason\":\"说明\"}。严禁 Markdown 代码块，严禁任何额外文字。"))
+                put(JSONObject().put("role", "user").put("content", prompt))
+            })
         }
 
-        try {
-            connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
-            val status = connection.responseCode
-            val response = (if (status in 200..299) connection.inputStream else connection.errorStream)
-                ?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
-
-            Log.d("DOUBAO_RAW_FULL_RESP", "status=$status, response=$response")
-            val root = runCatching { JSONObject(response) }.getOrNull()
-
-            if (status !in 200..299 || root == null) {
-                val errorBody = root?.optJSONObject("error")
-                val code = errorBody?.optString("code").orEmpty()
-                val detail = errorBody?.optString("message").orEmpty()
-                val guidance = when (code) {
-                    "ModelNotOpen" -> "方舟账号尚未开通此模型。请在方舟控制台开通模型服务，或填写已创建的推理接入点 ID（Endpoint ID）。"
-                    "InvalidEndpointOrModel.ModelIDAccessDisabled" -> "当前方舟账号不允许直接使用模型 ID，请填写控制台中已创建的推理接入点 ID（Endpoint ID，例如 ep-20250101xxxxxx-xxxxx）。"
-                    "InvalidEndpointOrModel.NotFound" -> "模型或推理接入点不存在，或当前账号无权访问。请核对模型 ID / Endpoint ID 并确认已开通。"
-                    "PathNotFound" -> "方舟接口路径未识别，请检查 API 区域和接口地址。"
-                    else -> detail.ifBlank { "HTTP $status 请求异常，请检查模型 Endpoint ID 和 API Key。" }
-                }
-                error("豆包请求失败（$guidance）")
+        fun executeRequest(body: JSONObject): Pair<Int, String> {
+            val connection = (URL("https://ark.cn-beijing.volces.com/api/v3/chat/completions").openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 15_000
+                readTimeout = 90_000
+                doOutput = true
+                setRequestProperty("Authorization", "Bearer $apiKey")
+                setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                setRequestProperty("Accept", "application/json")
             }
-
-            val rawContent = root.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")?.optString("content").orEmpty()
-            val cleanContent = rawContent.replace(Regex("(?s)<think>.*?</think>"), "").trim().ifBlank { rawContent.trim() }
-
-            Log.d("DOUBAO_RAW", "rawContent: $rawContent")
-            Log.d("DOUBAO_RAW", "cleanContent: $cleanContent")
-
-            val parsedIds = extractCandidateIds(cleanContent)
-            val jsonObject = runCatching { JSONObject(parseJsonBlock(cleanContent)) }.getOrNull()
-            val reasonText = jsonObject?.optString("reason")?.ifBlank { null } ?: "已根据模型分析和本地候选池完成精选。"
-
-            val validIds = parsedIds.filter { it in candidates.indices }.distinct().take(count)
-
-            if (validIds.isEmpty()) {
-                val fallbackTickets = candidates.shuffled().take(count).map { it.copy(gameCode = game.code) }
-                val rawSummary = cleanContent.take(120).replace("\n", " ")
-                val fallbackReason = "【模型未返回有效编号，已自动随机挑选】 原始返回：${rawSummary.ifBlank { "模型响应空白" }}"
-                return DoubaoPickResult(fallbackTickets, fallbackReason)
+            return try {
+                connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+                val status = connection.responseCode
+                val response = (if (status in 200..299) connection.inputStream else connection.errorStream)
+                    ?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
+                status to response
+            } finally {
+                connection.disconnect()
             }
-
-            val output = validIds.map { candidates[it].copy(gameCode = game.code) }
-            return DoubaoPickResult(output, reasonText)
-        } finally {
-            connection.disconnect()
         }
+
+        var (status, response) = executeRequest(createRequestBody(disableThinking = true))
+        if (status == 400 && response.contains("thinking", ignoreCase = true)) {
+            val fallbackResult = executeRequest(createRequestBody(disableThinking = false))
+            status = fallbackResult.first
+            response = fallbackResult.second
+        }
+
+        Log.d("DOUBAO_RAW_FULL_RESP", "status=$status, response=$response")
+        val root = runCatching { JSONObject(response) }.getOrNull()
+
+        if (status !in 200..299 || root == null) {
+            val errorBody = root?.optJSONObject("error")
+            val code = errorBody?.optString("code").orEmpty()
+            val detail = errorBody?.optString("message").orEmpty()
+            val guidance = when (code) {
+                "ModelNotOpen" -> "方舟账号尚未开通此模型。请在方舟控制台开通模型服务，或填写已创建的推理接入点 ID（Endpoint ID）。"
+                "InvalidEndpointOrModel.ModelIDAccessDisabled" -> "当前方舟账号不允许直接使用模型 ID，请填写控制台中已创建的推理接入点 ID（Endpoint ID，例如 ep-20250101xxxxxx-xxxxx）。"
+                "InvalidEndpointOrModel.NotFound" -> "模型或推理接入点不存在，或当前账号无权访问。请核对模型 ID / Endpoint ID 并确认已开通。"
+                "PathNotFound" -> "方舟接口路径未识别，请检查 API 区域和接口地址。"
+                else -> detail.ifBlank { "HTTP $status 请求异常，请检查模型 Endpoint ID 和 API Key。" }
+            }
+            error("豆包请求失败（$guidance）")
+        }
+
+        val rawContent = root.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")?.optString("content").orEmpty()
+        val cleanContent = rawContent.replace(Regex("(?s)<think>.*?</think>"), "").trim().ifBlank { rawContent.trim() }
+
+        Log.d("DOUBAO_RAW", "rawContent: $rawContent")
+        Log.d("DOUBAO_RAW", "cleanContent: $cleanContent")
+
+        val parsedIds = extractCandidateIds(cleanContent)
+        val jsonObject = runCatching { JSONObject(parseJsonBlock(cleanContent)) }.getOrNull()
+        val reasonText = jsonObject?.optString("reason")?.ifBlank { null } ?: "已根据模型分析和本地候选池完成精选。"
+
+        val validIds = parsedIds.filter { it in candidates.indices }.distinct().take(count)
+
+        if (validIds.isEmpty()) {
+            val fallbackTickets = candidates.shuffled().take(count).map { it.copy(gameCode = game.code) }
+            val rawSummary = cleanContent.take(120).replace("\n", " ")
+            val fallbackReason = "【模型未返回有效编号，已自动随机挑选】 原始返回：${rawSummary.ifBlank { "模型响应空白" }}"
+            return DoubaoPickResult(fallbackTickets, fallbackReason)
+        }
+
+        val output = validIds.map { candidates[it].copy(gameCode = game.code) }
+        return DoubaoPickResult(output, reasonText)
     }
 
     private fun extractCandidateIds(cleanContent: String): List<Int> {
