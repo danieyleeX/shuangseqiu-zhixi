@@ -209,8 +209,7 @@ fun App(db: LotteryDatabase) {
                         game = selectedGame,
                         syncTime = syncTime,
                         generatedHistory = generatedHistory,
-                        onClearHistory = ::clearHistory,
-                        onOpenSettings = { showSettingsDialog = true }
+                        onClearHistory = ::clearHistory
                     )
                     1 -> if (selectedGame.code == "ssq") Analysis(draws, years, { years = it }) else GameAnalysis(selectedGame, gameDraws, years, { years = it })
                     2 -> if (selectedGame.code == "ssq") History(draws, historyScroll) else GameHistory(selectedGame, gameDraws, historyScroll)

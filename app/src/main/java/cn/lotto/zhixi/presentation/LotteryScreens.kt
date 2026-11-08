@@ -24,6 +24,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -63,8 +64,20 @@ private fun Header(title: String, subtitle: String? = null, timestamp: String? =
             }
         }
         if (onOpenSettings != null) {
-            IconButton(onClick = onOpenSettings, modifier = Modifier.size(36.dp)) {
-                Text("⚙", fontSize = 22.sp, color = Ink)
+            Box(
+                Modifier
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .background(Green.copy(alpha = 0.12f))
+                    .clickable { onOpenSettings() },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    painter = painterResource(cn.lotto.zhixi.R.drawable.ic_settings),
+                    contentDescription = "系统设置",
+                    tint = Green,
+                    modifier = Modifier.size(20.dp)
+                )
             }
         }
     }
@@ -164,10 +177,7 @@ fun SystemSettingsDialog(
             }
         },
         title = {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text("系统设置", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = Ink)
-                Text("⚙", fontSize = 20.sp)
-            }
+            Text("系统设置", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = Ink)
         },
         text = {
             Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -272,8 +282,7 @@ fun Home(
     game: LotteryGame,
     syncTime: String,
     generatedHistory: List<GeneratedRecord>,
-    onClearHistory: () -> Unit,
-    onOpenSettings: () -> Unit
+    onClearHistory: () -> Unit
 ) {
     var clockNow by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(game.code) { while (true) { clockNow = System.currentTimeMillis(); delay(1000) } }
@@ -282,7 +291,7 @@ fun Home(
     val otherResult = remember(gameDraws, game.code) { if (game.code != "ssq") LotteryEngine.backtestGame(gameDraws, game, "AI集成", 1) else null }
 
     PageScroll {
-        Header("彩票智析", "统计模型参考 · ${game.name}", syncTime, onOpenSettings)
+        Header("彩票智析", "统计模型参考 · ${game.name}", syncTime)
 
         // 1. 本期推荐号码
         CardBox {
