@@ -13,51 +13,32 @@ import cn.lotto.zhixi.domain.model.*
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.time.LocalDate
-import java.time.DayOfWeek
-import java.time.Duration
-import java.time.Instant
-import java.time.LocalTime
-import java.time.ZoneId
-import java.time.ZonedDateTime
-import java.time.format.DateTimeFormatter
 
 internal val Ink = Color(0xFF19332D)
 internal val Muted = Color(0xFF788A82)
 internal var Green by mutableStateOf(Color(0xFFD94372))
-internal val DeepGreen = Color(0xFF0D5B4D)
 internal val CanvasBg = Color(0xFFF3F7F4)
 internal val Red = Color(0xFFE65B62)
 internal val Blue = Color(0xFF4B83D7)
@@ -97,21 +78,27 @@ fun App(db: LotteryDatabase) {
     var themeIndex by remember { mutableIntStateOf(prefs.getInt("theme_index", 0).coerceIn(0, ThemePalette.lastIndex)) }
     val selectedTheme = ThemePalette[themeIndex]
     SideEffect { Green = selectedTheme.second }
+
     var years by remember { mutableIntStateOf(1) }
     var amount by remember { mutableIntStateOf(3) }
     var mode by remember { mutableStateOf("综合模型") }
-    var homeQuick by remember { mutableStateOf<List<Ticket>>(emptyList()) }
     var smartTickets by remember { mutableStateOf<List<Ticket>>(emptyList()) }
     var draws by remember { mutableStateOf(db.readAll()) }
     var gameDraws by remember(selectedGameCode) { mutableStateOf(db.readGame(selectedGameCode)) }
+    var generatedHistory by remember(selectedGameCode) { mutableStateOf(db.readGeneratedRecords(selectedGameCode)) }
+
     var syncing by remember { mutableStateOf(false) }
     var syncMessage by remember { mutableStateOf("") }
     var syncTime by remember { mutableStateOf(context.getSharedPreferences("sync", 0).getString("last_ok", null).orEmpty()) }
+
     var doubaoApiKey by remember { mutableStateOf(DoubaoKeyVault.loadOrInitialize(context, BuildConfig.DEFAULT_DOUBAO_API_KEY)) }
     var doubaoModelId by remember { mutableStateOf(prefs.getString("doubao_model_id", "doubao-seed-2-1-pro-260915") ?: "doubao-seed-2-1-pro-260915") }
     var doubaoBusy by remember { mutableStateOf(false) }
     var doubaoMessage by remember { mutableStateOf("") }
     var doubaoReason by remember { mutableStateOf("") }
+
+    var showSettingsDialog by remember { mutableStateOf(false) }
+
     val historyScroll = rememberScrollState()
     val pinnedTicket = remember(draws, gameDraws, selectedGameCode) {
         val latestIssue = if (selectedGame.code == "ssq") draws.firstOrNull()?.issue else gameDraws.firstOrNull()?.issue
@@ -125,18 +112,45 @@ fun App(db: LotteryDatabase) {
         }
     }
 
-    fun sync() {
+    fun recordTickets(modeName: String, summary: String, tickets: List<Ticket>) {
+        if (tickets.isEmpty()) return
+        val timeStr = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.CHINA).format(java.util.Date())
+        val latestIssue = if (selectedGame.code == "ssq") draws.firstOrNull()?.issue.orEmpty() else gameDraws.firstOrNull()?.issue.orEmpty()
+        val record = GeneratedRecord(
+            gameCode = selectedGameCode,
+            issue = latestIssue,
+            timestamp = timeStr,
+            mode = modeName,
+            filterSummary = summary,
+            tickets = tickets
+        )
+        scope.launch(Dispatchers.IO) {
+            db.insertGeneratedRecord(record)
+            val updated = db.readGeneratedRecords(selectedGameCode)
+            withContext(Dispatchers.Main) { generatedHistory = updated }
+        }
+    }
+
+    fun clearHistory() {
+        scope.launch(Dispatchers.IO) {
+            db.clearGeneratedRecords(selectedGameCode)
+            val updated = db.readGeneratedRecords(selectedGameCode)
+            withContext(Dispatchers.Main) { generatedHistory = updated }
+        }
+    }
+
+    fun syncCurrentGame() {
         if (syncing) return
         syncing = true
-        syncMessage = "正在同步各彩种官方开奖数据…"
+        syncMessage = "正在更新【${selectedGame.name}】开奖数据…"
         scope.launch {
-            val result = withContext(Dispatchers.IO) { runCatching { OfficialDrawSync(db).syncLatest() } }
+            val result = withContext(Dispatchers.IO) { runCatching { OfficialDrawSync(db).syncGame(selectedGameCode) } }
             result.onSuccess { updated ->
                 draws = db.readAll()
                 gameDraws = db.readGame(selectedGameCode)
                 syncTime = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.CHINA).format(java.util.Date())
                 context.getSharedPreferences("sync", 0).edit().putString("last_ok", syncTime).apply()
-                val success = "同步成功 · 更新 $updated 期"
+                val success = "同步成功 · 更新【${selectedGame.name}】$updated 期"
                 syncMessage = success
                 syncing = false
                 delay(4000)
@@ -146,7 +160,7 @@ fun App(db: LotteryDatabase) {
         }
     }
 
-        MaterialTheme(colorScheme = lightColorScheme(primary = selectedTheme.second, secondary = selectedTheme.second, background = CanvasBg, surface = Color.White)) {
+    MaterialTheme(colorScheme = lightColorScheme(primary = selectedTheme.second, secondary = selectedTheme.second, background = CanvasBg, surface = Color.White)) {
         Scaffold(
             containerColor = Color.Transparent,
             bottomBar = {
@@ -157,59 +171,83 @@ fun App(db: LotteryDatabase) {
                             .border(1.dp, Color.White.copy(alpha = .95f), RoundedCornerShape(24.dp)).padding(horizontal = 5.dp, vertical = 4.dp),
                         horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically
                     ) {
-                    val labels = listOf("首页", "数据分析", "历史数据", "智能选号")
-                    val icons = listOf(R.drawable.ic_nav_home, R.drawable.ic_nav_analysis, R.drawable.ic_nav_history, R.drawable.ic_nav_smart)
-                    labels.forEachIndexed { index, label ->
-                        val selected = page == index
-                        val historyReturn = index == 2 && page == 2 && historyScroll.value > 80
-                        Box(
-                            Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(26.dp)).clickable {
-                                when {
-                                    historyReturn -> scope.launch { historyScroll.animateScrollTo(0) }
-                                    page == 2 && index != 2 -> scope.launch { historyScroll.scrollTo(0); page = index }
-                                    else -> page = index
-                                }
-                            },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            if (selected) {
-                                Icon(painterResource(if (historyReturn) R.drawable.ic_nav_top else icons[index]), contentDescription = if (historyReturn) "回到顶部" else label, tint = Green, modifier = Modifier.size(23.dp))
-                            } else {
-                                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                                    Icon(painterResource(icons[index]), contentDescription = label, tint = Muted, modifier = Modifier.size(18.dp))
-                                    Text(label, color = Muted, fontSize = 9.sp, lineHeight = 11.sp, modifier = Modifier.padding(top = 1.dp))
+                        val labels = listOf("首页", "数据分析", "历史数据", "智能选号")
+                        val icons = listOf(R.drawable.ic_nav_home, R.drawable.ic_nav_analysis, R.drawable.ic_nav_history, R.drawable.ic_nav_smart)
+                        labels.forEachIndexed { index, label ->
+                            val selected = page == index
+                            val historyReturn = index == 2 && page == 2 && historyScroll.value > 80
+                            Box(
+                                Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(26.dp)).clickable {
+                                    when {
+                                        historyReturn -> scope.launch { historyScroll.animateScrollTo(0) }
+                                        page == 2 && index != 2 -> scope.launch { historyScroll.scrollTo(0); page = index }
+                                        else -> page = index
+                                    }
+                                },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (selected) {
+                                    Icon(painterResource(if (historyReturn) R.drawable.ic_nav_top else icons[index]), contentDescription = if (historyReturn) "回到顶部" else label, tint = Green, modifier = Modifier.size(23.dp))
+                                } else {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                                        Icon(painterResource(icons[index]), contentDescription = label, tint = Muted, modifier = Modifier.size(18.dp))
+                                        Text(label, color = Muted, fontSize = 9.sp, lineHeight = 11.sp, modifier = Modifier.padding(top = 1.dp))
+                                    }
                                 }
                             }
                         }
-                    }
                     }
                 }
             }
         ) { inset ->
             Box(Modifier.fillMaxSize().background(CanvasBg).padding(inset)) {
                 when (page) {
-                    0 -> Home(draws, gameDraws, pinnedTicket, homeQuick, years, amount, mode, selectedGame, themeIndex,
-                        { years = it }, { amount = it }, { mode = it },
-                        { homeQuick = LotteryEngine.generateForGame(draws, amount, years, mode, selectedGame) }, syncTime,
-                        { code -> selectedGameCode = code; gameDraws = db.readGame(code); prefs.edit().putString("selected_game", code).apply(); homeQuick = emptyList(); smartTickets = emptyList() },
-                        { index -> themeIndex = index; prefs.edit().putInt("theme_index", index).apply() })
+                    0 -> Home(
+                        draws = draws,
+                        gameDraws = gameDraws,
+                        pinned = pinnedTicket,
+                        game = selectedGame,
+                        syncTime = syncTime,
+                        generatedHistory = generatedHistory,
+                        onClearHistory = ::clearHistory,
+                        onOpenSettings = { showSettingsDialog = true }
+                    )
                     1 -> if (selectedGame.code == "ssq") Analysis(draws, years, { years = it }) else GameAnalysis(selectedGame, gameDraws, years, { years = it })
-                    2 -> if (selectedGame.code == "ssq") History(draws, syncing, syncMessage, syncTime, ::sync, historyScroll) else GameHistory(selectedGame, gameDraws, syncing, syncMessage, syncTime, ::sync, historyScroll)
-                    else -> Smart(draws, gameDraws, years, amount, mode, selectedGame, { years = it }, { amount = it }, { mode = it },
-                        { smartTickets = LotteryEngine.generateForGame(draws, amount, years, mode, selectedGame) },
-                        { filters -> smartTickets = LotteryEngine.generateForGame(draws, amount, years, mode, selectedGame, sumRange = filters.sum, oddRange = filters.odd, bigRange = filters.big, maxConsecutivePairs = filters.maxRuns) },
-                        smartTickets, doubaoApiKey, { doubaoApiKey = it }, doubaoModelId, { doubaoModelId = it },
-                        { key, model -> doubaoApiKey = key; doubaoModelId = model; DoubaoKeyVault.save(context, key); prefs.edit().putString("doubao_model_id", model).apply(); doubaoMessage = "豆包配置已安全保存" },
-                        doubaoBusy, doubaoMessage, doubaoReason,
-                        { filters ->
+                    2 -> if (selectedGame.code == "ssq") History(draws, historyScroll) else GameHistory(selectedGame, gameDraws, historyScroll)
+                    else -> Smart(
+                        draws = draws,
+                        gameDraws = gameDraws,
+                        years = years,
+                        amount = amount,
+                        mode = mode,
+                        game = selectedGame,
+                        setYears = { years = it },
+                        setAmount = { amount = it },
+                        setMode = { mode = it },
+                        generate = {
+                            val res = LotteryEngine.generateForGame(draws, amount, years, mode, selectedGame)
+                            smartTickets = res
+                            recordTickets(mode, "常规组数 $amount 组", res)
+                        },
+                        generateFiltered = { filters ->
+                            val res = LotteryEngine.generateForGame(draws, amount, years, mode, selectedGame, sumRange = filters.sum, oddRange = filters.odd, bigRange = filters.big, maxConsecutivePairs = filters.maxRuns)
+                            smartTickets = res
+                            val summary = "和值 ${filters.sum.first}–${filters.sum.last} · 奇偶 ${filters.odd.first}–${filters.odd.last}"
+                            recordTickets(mode, summary, res)
+                        },
+                        tickets = smartTickets,
+                        aiBusy = doubaoBusy,
+                        aiMessage = doubaoMessage,
+                        aiReason = doubaoReason,
+                        generateDoubao = { filters ->
                             if (doubaoBusy) return@Smart
-                            if (doubaoApiKey.isBlank()) { doubaoMessage = "请先填写豆包 API Key 并保存"; return@Smart }
-                            doubaoBusy = true; doubaoMessage = "正在根据历史数据请求豆包分析…"; doubaoReason = ""
+                            if (doubaoApiKey.isBlank()) { doubaoMessage = "请先在右上角【设置】中配置豆包 API Key"; return@Smart }
+                            doubaoBusy = true; doubaoMessage = "正在请求豆包 AI 分析…"; doubaoReason = ""
                             scope.launch {
                                 val history = if (selectedGame.code == "ssq") draws.map { GameDraw("ssq", it.issue, it.date, it.reds, listOf(it.blue)) } else gameDraws
                                 val result = withContext(Dispatchers.IO) { runCatching {
-                                    val frontMin = if (filters?.sum != null) filters.sum.first else Int.MIN_VALUE
-                                    val frontMax = if (filters?.sum != null) filters.sum.last else Int.MAX_VALUE
+                                    val frontMin = filters?.sum?.first ?: Int.MIN_VALUE
+                                    val frontMax = filters?.sum?.last ?: Int.MAX_VALUE
                                     val candidates = buildList {
                                         repeat(4) { batch ->
                                             addAll(LotteryEngine.generateForGame(draws, 10, years, "AI集成", selectedGame,
@@ -223,11 +261,54 @@ fun App(db: LotteryDatabase) {
                                     }.distinctBy { it.reds.joinToString(",") + "+" + it.secondary.joinToString(",") }
                                     DoubaoLotteryClient.generate(selectedGame, history, candidates, amount, years, mode, doubaoModelId, doubaoApiKey)
                                 } }
-                                result.onSuccess { picked -> smartTickets = picked.tickets; doubaoReason = picked.reasoning; doubaoMessage = "豆包选号完成 · ${picked.tickets.size} 组" }
-                                    .onFailure { doubaoMessage = "豆包选号失败：${it.message?.take(100) ?: "网络或配置错误"}" }
+                                result.onSuccess { picked ->
+                                    smartTickets = picked.tickets
+                                    doubaoReason = picked.reasoning
+                                    doubaoMessage = "豆包 AI 选号完成 · ${picked.tickets.size} 组"
+                                    val summary = if (filters != null) "和值 ${filters.sum.first}–${filters.sum.last} · 豆包 AI 精选" else "豆包 AI 智能精选"
+                                    recordTickets("豆包 AI 分析", summary, picked.tickets)
+                                }.onFailure {
+                                    doubaoMessage = "豆包选号失败：${it.message?.take(100) ?: "网络或配置错误"}"
+                                }
                                 doubaoBusy = false
                             }
-                        })
+                        },
+                        onOpenSettings = { showSettingsDialog = true }
+                    )
+                }
+
+                if (showSettingsDialog) {
+                    SystemSettingsDialog(
+                        game = selectedGame,
+                        setGame = { code ->
+                            selectedGameCode = code
+                            gameDraws = db.readGame(code)
+                            prefs.edit().putString("selected_game", code).apply()
+                            smartTickets = emptyList()
+                            generatedHistory = db.readGeneratedRecords(code)
+                        },
+                        themeIndex = themeIndex,
+                        setTheme = { index ->
+                            themeIndex = index
+                            prefs.edit().putInt("theme_index", index).apply()
+                        },
+                        syncing = syncing,
+                        syncMessage = syncMessage,
+                        syncTime = syncTime,
+                        onSyncCurrentGame = ::syncCurrentGame,
+                        apiKey = doubaoApiKey,
+                        setApiKey = { doubaoApiKey = it },
+                        modelId = doubaoModelId,
+                        setModelId = { doubaoModelId = it },
+                        saveAiConfig = { key, model ->
+                            doubaoApiKey = key
+                            doubaoModelId = model
+                            DoubaoKeyVault.save(context, key)
+                            prefs.edit().putString("doubao_model_id", model).apply()
+                            doubaoMessage = "模型配置保存成功"
+                        },
+                        onDismiss = { showSettingsDialog = false }
+                    )
                 }
             }
         }
@@ -242,4 +323,3 @@ private fun parseTicket(value: String): Ticket? = runCatching {
     val secondary = parts.getOrNull(4)?.takeIf { it.isNotBlank() }?.split(',')?.map(String::toInt) ?: listOf(blue)
     Ticket(parts[0].split(',').map(String::toInt), blue, parts[2].toInt(), gameCode, secondary)
 }.getOrNull()
-

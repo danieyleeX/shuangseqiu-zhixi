@@ -21,6 +21,16 @@ import java.util.concurrent.TimeUnit
 
 class OfficialDrawSync(private val database: LotteryDatabase) {
     fun syncLatest(): Int = syncAll()
+    fun syncGame(gameCode: String): Int {
+        return when (gameCode) {
+            "ssq" -> syncWelfare("ssq", "ssq")
+            "fc3d" -> syncWelfare("fc3d", "3d")
+            "dlt" -> syncSport("dlt", "85")
+            "pl3" -> syncSport("pl3", "35")
+            "pl5" -> syncSport("pl5", "350133")
+            else -> 0
+        }
+    }
     fun syncAll(): Int {
         var total = 0
         total += syncWelfare("ssq", "ssq")

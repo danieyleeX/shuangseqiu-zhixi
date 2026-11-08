@@ -3,9 +3,6 @@ package cn.lotto.zhixi.presentation
 import cn.lotto.zhixi.domain.engine.LotteryEngine
 import cn.lotto.zhixi.domain.model.*
 
-import android.os.Bundle
-import androidx.activity.ComponentActivity
-import androidx.activity.compose.setContent
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -22,22 +19,17 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.time.LocalDate
 import java.time.DayOfWeek
 import java.time.Duration
@@ -53,15 +45,28 @@ private fun PageScroll(content: @Composable ColumnScope.() -> Unit) {
 }
 
 @Composable
-private fun Header(title: String, subtitle: String? = null, timestamp: String? = null) {
-    Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp)) {
-        Text(title, fontSize = 24.sp, fontWeight = FontWeight.ExtraBold, color = Ink)
-        if (subtitle != null && timestamp != null) {
-            Row(Modifier.fillMaxWidth().padding(top = 5.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text(subtitle, fontSize = 12.sp, color = Muted)
-                Text("数据更新 · ${timestamp.ifBlank { "待同步" }}", fontSize = 11.sp, color = Green)
+private fun Header(title: String, subtitle: String? = null, timestamp: String? = null, onOpenSettings: (() -> Unit)? = null) {
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(title, fontSize = 24.sp, fontWeight = FontWeight.ExtraBold, color = Ink)
+            if (subtitle != null && timestamp != null) {
+                Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Text(subtitle, fontSize = 12.sp, color = Muted)
+                    Text("数据更新 · ${timestamp.ifBlank { "待同步" }}", fontSize = 11.sp, color = Green)
+                }
+            } else if (subtitle != null) {
+                Text(subtitle, fontSize = 13.sp, color = Muted, modifier = Modifier.padding(top = 4.dp))
             }
-        } else if (subtitle != null) Text(subtitle, fontSize = 13.sp, color = Muted, modifier = Modifier.padding(top = 4.dp))
+        }
+        if (onOpenSettings != null) {
+            IconButton(onClick = onOpenSettings, modifier = Modifier.size(36.dp)) {
+                Text("⚙", fontSize = 22.sp, color = Ink)
+            }
+        }
     }
 }
 
@@ -135,6 +140,244 @@ private fun GameDrawNumbers(draw: GameDraw, game: LotteryGame) {
 }
 
 @Composable
+fun SystemSettingsDialog(
+    game: LotteryGame,
+    setGame: (String) -> Unit,
+    themeIndex: Int,
+    setTheme: (Int) -> Unit,
+    syncing: Boolean,
+    syncMessage: String,
+    syncTime: String,
+    onSyncCurrentGame: () -> Unit,
+    apiKey: String,
+    setApiKey: (String) -> Unit,
+    modelId: String,
+    setModelId: (String) -> Unit,
+    saveAiConfig: (String, String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            Button(onClick = onDismiss, shape = RoundedCornerShape(10.dp)) {
+                Text("完成")
+            }
+        },
+        title = {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text("系统设置", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = Ink)
+                Text("⚙", fontSize = 20.sp)
+            }
+        },
+        text = {
+            Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                // 1. 切换彩种
+                Column {
+                    Text("1. 切换彩种", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Ink)
+                    Spacer(Modifier.height(6.dp))
+                    ChipRow(LotteryGames.all.map { it.name }, game.name) { name ->
+                        setGame(LotteryGames.all.first { it.name == name }.code)
+                    }
+                }
+
+                HorizontalDivider(color = Color(0xFFEDF1EE))
+
+                // 2. 数据更新
+                Column {
+                    Text("2. 数据更新（仅限当前彩种）", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Ink)
+                    Text("最近同步时间：${syncTime.ifBlank { "未同步" }}", fontSize = 11.sp, color = Muted, modifier = Modifier.padding(top = 2.dp))
+                    Text("点击后将连接官方服务器，只拉取当前【${game.name}】最近 100 期开奖记录。", fontSize = 11.sp, color = Muted, modifier = Modifier.padding(top = 2.dp))
+                    Spacer(Modifier.height(8.dp))
+                    Button(
+                        onClick = onSyncCurrentGame,
+                        enabled = !syncing,
+                        modifier = Modifier.fillMaxWidth().height(36.dp),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text(if (syncing) "正在更新【${game.name}】数据…" else "↻ 手动更新【${game.name}】数据", fontSize = 12.sp)
+                    }
+                    if (syncMessage.isNotBlank()) {
+                        Text(syncMessage, color = if (syncMessage.startsWith("同步失败")) Red else Green, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
+                    }
+                }
+
+                HorizontalDivider(color = Color(0xFFEDF1EE))
+
+                // 3. 模型信息设置
+                Column {
+                    Text("3. 豆包大模型配置", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Ink)
+                    Text("请填写火山方舟账号配置的模型 ID 或 Endpoint ID（例如 ep-20250101xxxxxx-xxxxx）。", fontSize = 11.sp, color = Muted, modifier = Modifier.padding(top = 2.dp))
+                    OutlinedTextField(
+                        value = modelId,
+                        onValueChange = setModelId,
+                        label = { Text("模型 ID / Endpoint ID") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
+                    )
+                    OutlinedTextField(
+                        value = apiKey,
+                        onValueChange = setApiKey,
+                        label = { Text("火山方舟 API Key") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
+                    )
+                    Button(
+                        onClick = { saveAiConfig(apiKey.trim(), modelId.trim()) },
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp).height(36.dp),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text("🔒 加密保存模型配置", fontSize = 12.sp)
+                    }
+                }
+
+                HorizontalDivider(color = Color(0xFFEDF1EE))
+
+                // 4. 主题设置
+                Column {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Text("4. 主题颜色", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Ink)
+                        Text(ThemePalette[themeIndex].first, color = Green, fontSize = 12.sp)
+                    }
+                    Row(
+                        Modifier.fillMaxWidth().padding(top = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        ThemePalette.forEachIndexed { index, (name, color) ->
+                            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable { setTheme(index) }) {
+                                Box(
+                                    Modifier.size(if (themeIndex == index) 28.dp else 24.dp).background(color, CircleShape)
+                                        .then(if (themeIndex == index) Modifier.border(2.dp, color.copy(alpha = .42f), CircleShape) else Modifier),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    if (themeIndex == index) Text("✓", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                }
+                                Text(name, color = Muted, fontSize = 9.sp, modifier = Modifier.padding(top = 3.dp))
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        shape = RoundedCornerShape(16.dp)
+    )
+}
+
+@Composable
+fun Home(
+    draws: List<Draw>,
+    gameDraws: List<GameDraw>,
+    pinned: Ticket?,
+    game: LotteryGame,
+    syncTime: String,
+    generatedHistory: List<GeneratedRecord>,
+    onClearHistory: () -> Unit,
+    onOpenSettings: () -> Unit
+) {
+    var clockNow by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(game.code) { while (true) { clockNow = System.currentTimeMillis(); delay(1000) } }
+    val countdown = remember(game.code, clockNow) { lotteryCountdown(game, clockNow) }
+    val ssqResult = remember(draws, game.code) { if (game.code == "ssq") LotteryEngine.backtest(draws, "AI集成", 1) else null }
+    val otherResult = remember(gameDraws, game.code) { if (game.code != "ssq") LotteryEngine.backtestGame(gameDraws, game, "AI集成", 1) else null }
+
+    PageScroll {
+        Header("彩票智析", "统计模型参考 · ${game.name}", syncTime, onOpenSettings)
+
+        // 1. 本期推荐号码
+        CardBox {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Column { Text("本期推荐号码", color = Muted, fontSize = 13.sp); Text("AI 集成 · 候选池择优", color = Ink, fontSize = 18.sp, fontWeight = FontWeight.Bold) }
+                Text("${if (game.code == "ssq") draws.size else gameDraws.size}期数据", color = Green, fontSize = 11.sp)
+            }
+            Spacer(Modifier.height(10.dp))
+            if (pinned != null) {
+                TicketNumbers(pinned)
+                Text("结构评分 ${pinned.score} / 100 · 从 250 组候选中择优 · 不代表中奖概率", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 10.dp))
+            } else Text("历史数据准备中", color = Muted)
+        }
+
+        // 2. 开奖倒计时与上期信息
+        CardBox {
+            Label("${game.name} · 开奖信息")
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text("下一期开奖", color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                Text(countdown.drawAt.format(DateTimeFormatter.ofPattern("M月d日 E HH:mm:ss", java.util.Locale.CHINA)), color = Green, fontSize = 12.sp)
+            }
+            Text("距离开奖  ${formatCountdown(countdown.secondsToDraw)}", color = Green, fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp))
+            Row(Modifier.fillMaxWidth().padding(top = 5.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text("销售截止 ${countdown.saleCutoff.format(DateTimeFormatter.ofPattern("M月d日 HH:mm:ss", java.util.Locale.CHINA))}", color = Muted, fontSize = 11.sp)
+                Text(if (countdown.secondsToSale == 0L) "本期销售已截止" else "剩余 ${formatCountdown(countdown.secondsToSale)}", color = if (countdown.secondsToSale == 0L) Red else Amber, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+            }
+            Text("按常规开奖日历计算，休市及特别安排以官方公告为准。", color = Muted, fontSize = 10.sp, modifier = Modifier.padding(top = 4.dp))
+            if ((game.code == "ssq" && draws.isNotEmpty()) || (game.code != "ssq" && gameDraws.isNotEmpty())) {
+                val drawDate = if (game.code == "ssq") draws.first().date else gameDraws.first().date
+                val drawIssue = if (game.code == "ssq") draws.first().issue else gameDraws.first().issue
+                HorizontalDivider(Modifier.padding(vertical = 8.dp), color = Color(0xFFEDF1EE))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("最近一期官方开奖", color = Ink, fontWeight = FontWeight.Bold); Text("$drawDate · ${drawIssue}期", color = Muted, fontSize = 12.sp) }
+                Spacer(Modifier.height(8.dp)); if (game.code == "ssq") Numbers(draws.first().reds, draws.first().blue, true) else GameDrawNumbers(gameDraws.first(), game)
+            } else {
+                Text("等待首次同步官方开奖数据。", color = Muted, fontSize = 12.sp)
+            }
+        }
+
+        // 3. 历史策略回测分析（从智能选号移动至主页最底部）
+        CardBox {
+            Label("${game.name} · 历史策略回测分析")
+            Text("【什么是历史回测？】—— 模拟逐期向前滚动回测。对历史每一期开奖，仅使用当期以前的历史开奖数据执行算法抽样，绝无未来数据介入，用以客观评估选号策略的历史拟合表现与结构稳定性。", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(bottom = 8.dp))
+
+            if (ssqResult != null) {
+                Text("红球累计命中 ${ssqResult.redHits} 次 · 蓝球命中 ${ssqResult.blueHits} 次", color = Ink, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Text("每期开奖平均命中 ${"%.2f".format(ssqResult.meanHits)} 个号码", color = Green, fontSize = 17.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp))
+                Spacer(Modifier.height(6.dp))
+                Text("历史样本命中分布：", color = Ink, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Text("0 个号: ${ssqResult.hit0} 期 · 1 个号: ${ssqResult.hit1} 期 · 2 个号: ${ssqResult.hit2} 期 · 3+ 个号: ${ssqResult.hit3Plus} 期", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
+            } else if (otherResult != null && otherResult.draws > 0) {
+                Text(if (game.digits) "位置号码累计命中 ${otherResult.frontHits} 位" else "前区累计命中 ${otherResult.frontHits} 个 · 后区累计命中 ${otherResult.backHits} 个", color = Ink, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Text("每期开奖平均命中 ${"%.2f".format(otherResult.meanHits)} 个", color = Green, fontSize = 17.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp))
+                Text("完全精细命中: ${otherResult.exactHits} 期", color = Ink, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
+                Text("命中分布：${otherResult.hitDistribution.toSortedMap().entries.joinToString(" · ") { "${it.key}个 ${it.value}期" }}", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
+            } else {
+                Text("历史开奖数据准备中，请在设置中更新数据。", color = Muted, fontSize = 12.sp)
+            }
+            Text("免责声明：历史回测仅对过往已知开奖数据进行模型拟合复盘，彩票开奖为独立随机事件，回测结果不代表未来中奖概率。", color = Muted, fontSize = 10.sp, modifier = Modifier.padding(top = 8.dp))
+        }
+
+        // 4. 选号历史记录（主页最底部）
+        CardBox {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Label("选号历史记录")
+                if (generatedHistory.isNotEmpty()) {
+                    TextButton(onClick = onClearHistory) { Text("清空历史", fontSize = 11.sp, color = Red) }
+                }
+            }
+            if (generatedHistory.isEmpty()) {
+                Text("暂无选号历史记录。在【智能选号】页生成或使用豆包 AI 分析后，历史记录将自动保存在这里。", color = Muted, fontSize = 12.sp)
+            } else {
+                generatedHistory.forEachIndexed { index, record ->
+                    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text("${record.mode} · ${record.issue}期", color = Ink, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            Text(record.timestamp, color = Muted, fontSize = 11.sp)
+                        }
+                        Text("规则：${record.filterSummary}", color = Green, fontSize = 11.sp, modifier = Modifier.padding(top = 2.dp, bottom = 6.dp))
+                        record.tickets.forEach { ticket ->
+                            Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                TicketNumbers(ticket, true)
+                                Text("分 ${ticket.score}", color = Muted, fontSize = 10.sp)
+                            }
+                        }
+                    }
+                    if (index < generatedHistory.lastIndex) HorizontalDivider(Modifier.padding(vertical = 8.dp), color = Color(0xFFEDF1EE))
+                }
+            }
+        }
+
+        Text("彩票开奖结果具有随机性，统计与历史回测不代表未来中奖概率。", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
+    }
+}
+
+@Composable
 fun GameAnalysis(game: LotteryGame, draws: List<GameDraw>, years: Int, setYears: (Int) -> Unit) {
     val latestYear = draws.firstOrNull()?.date?.take(4)?.toIntOrNull() ?: LocalDate.now().year
     val data = draws.filter { (it.date.take(4).toIntOrNull() ?: 0) >= latestYear - years + 1 }
@@ -197,7 +440,7 @@ fun GameAnalysis(game: LotteryGame, draws: List<GameDraw>, years: Int, setYears:
         CardBox {
             Label("号码遗漏走势")
             ChipRow((firstNumber..game.frontMax).map { if (game.digits) "$it" else "%02d".format(it) }, if (game.digits) "$selected" else "%02d".format(selected)) { selected = it.toInt() }
-            val trend = recent.mapIndexed { idx, _ -> recent.drop(idx).indexOfFirst { selected in it.front }.let { if (it < 0) (recent.size - idx).toFloat() else it.toFloat() } }
+            val trend = recent.mapIndexed { index, _ -> recent.drop(index).indexOfFirst { selected in it.front }.let { if (it < 0) (recent.size - index).toFloat() else it.toFloat() } }
             MiniChart(trend, Green)
         }
         Text("历史频率、遗漏和回测只描述过往样本，不能预测随机开奖结果。", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(horizontal = 20.dp))
@@ -205,7 +448,7 @@ fun GameAnalysis(game: LotteryGame, draws: List<GameDraw>, years: Int, setYears:
 }
 
 @Composable
-fun GameHistory(game: LotteryGame, draws: List<GameDraw>, syncing: Boolean, syncMessage: String, syncTime: String, sync: () -> Unit, scroll: androidx.compose.foundation.ScrollState) {
+fun GameHistory(game: LotteryGame, draws: List<GameDraw>, scroll: androidx.compose.foundation.ScrollState) {
     var filter by remember(game.code) { mutableStateOf("最近30期") }
     var query by remember(game.code) { mutableStateOf("") }
     var year by remember(game.code) { mutableStateOf("全部年份") }
@@ -217,7 +460,6 @@ fun GameHistory(game: LotteryGame, draws: List<GameDraw>, syncing: Boolean, sync
     Column(Modifier.fillMaxSize().verticalScroll(scroll).padding(bottom = 24.dp)) {
         Header("历史数据", "${game.name} · ${draws.size} 期 · 官方来源数据")
         CardBox {
-            SyncLine(syncing, syncMessage, syncTime, sync); Spacer(Modifier.height(8.dp))
             ChipRow(listOf("最近30期", "最近50期", "最近100期", "近1年", "近3年", "近5年", "近10年"), filter) { filter = it }
             Spacer(Modifier.height(8.dp)); ChipRow(yearOptions, year) { year = it }
             Spacer(Modifier.height(8.dp)); OutlinedTextField(value = query, onValueChange = { query = it }, label = { Text("查询期号或日期") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp))
@@ -233,106 +475,6 @@ fun GameHistory(game: LotteryGame, draws: List<GameDraw>, syncing: Boolean, sync
                 Text("和值 ${draw.front.sum()} · 跨度 ${(draw.front.maxOrNull() ?: 0) - (draw.front.minOrNull() ?: 0)}", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 8.dp))
             }
         }
-    }
-}
-
-@Composable
-private fun GameDataNotice(game: LotteryGame) {
-    PageScroll {
-        Header("${game.name}数据", "开奖历史暂未接入")
-        CardBox {
-            Label("当前支持情况")
-            Text("${game.name} 的号码规则和智能选号已可使用。官方历史开奖数据目前只接入双色球，因此本页不会展示双色球数据作为${game.name}的历史统计。", color = Ink, fontSize = 14.sp)
-            Text("切换回双色球即可查看官方开奖历史、频率分析和回测数据。", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 12.dp))
-        }
-    }
-}
-
-@Composable
-fun Home(draws: List<Draw>, gameDraws: List<GameDraw>, pinned: Ticket?, quick: List<Ticket>, years: Int, amount: Int, mode: String, game: LotteryGame, themeIndex: Int,
-                 setYears: (Int) -> Unit, setAmount: (Int) -> Unit, setMode: (String) -> Unit,
-                 generate: () -> Unit, syncTime: String, setGame: (String) -> Unit, setTheme: (Int) -> Unit) {
-    var clockNow by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(game.code) { while (true) { clockNow = System.currentTimeMillis(); delay(1000) } }
-    val countdown = remember(game.code, clockNow) { lotteryCountdown(game, clockNow) }
-    PageScroll {
-        Header("彩票智析", "统计模型参考 · ${game.name}", syncTime)
-        CardBox {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Column { Text("本期推荐号码", color = Muted, fontSize = 13.sp); Text("AI 集成 · 候选池择优", color = Ink, fontSize = 18.sp, fontWeight = FontWeight.Bold) }
-                Text("${if (game.code == "ssq") draws.size else gameDraws.size}期数据", color = Green, fontSize = 11.sp)
-            }
-            Spacer(Modifier.height(10.dp))
-            if (pinned != null) {
-                TicketNumbers(pinned)
-                Text("结构评分 ${pinned.score} / 100 · 从 250 组候选中择优 · 不代表中奖概率", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 10.dp))
-            } else Text("历史数据准备中", color = Muted)
-        }
-        CardBox {
-            Label("${game.name} · 开奖信息")
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text("下一期开奖", color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                Text(countdown.drawAt.format(DateTimeFormatter.ofPattern("M月d日 E HH:mm:ss", java.util.Locale.CHINA)), color = Green, fontSize = 12.sp)
-            }
-            Text("距离开奖  ${formatCountdown(countdown.secondsToDraw)}", color = Green, fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp))
-            Row(Modifier.fillMaxWidth().padding(top = 5.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text("销售截止 ${countdown.saleCutoff.format(DateTimeFormatter.ofPattern("M月d日 HH:mm:ss", java.util.Locale.CHINA))}", color = Muted, fontSize = 11.sp)
-                Text(if (countdown.secondsToSale == 0L) "本期销售已截止" else "剩余 ${formatCountdown(countdown.secondsToSale)}", color = if (countdown.secondsToSale == 0L) Red else Amber, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-            }
-            Text("按常规开奖日历计算，休市及特别安排以官方公告为准。", color = Muted, fontSize = 10.sp, modifier = Modifier.padding(top = 4.dp))
-            if ((game.code == "ssq" && draws.isNotEmpty()) || (game.code != "ssq" && gameDraws.isNotEmpty())) {
-                val drawDate = if (game.code == "ssq") draws.first().date else gameDraws.first().date
-                val drawIssue = if (game.code == "ssq") draws.first().issue else gameDraws.first().issue
-                HorizontalDivider(Modifier.padding(vertical = 8.dp), color = Color(0xFFEDF1EE))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("最近一期官方开奖", color = Ink, fontWeight = FontWeight.Bold); Text("$drawDate · ${drawIssue}期", color = Muted, fontSize = 12.sp) }
-                Spacer(Modifier.height(8.dp)); if (game.code == "ssq") Numbers(draws.first().reds, draws.first().blue, true) else GameDrawNumbers(gameDraws.first(), game)
-            } else {
-                Text("等待首次同步官方开奖数据。", color = Muted, fontSize = 12.sp)
-            }
-        }
-        CardBox {
-            Label("快速生成")
-            Row(verticalAlignment = Alignment.CenterVertically) { Text("数据窗口", color = Muted, fontSize = 13.sp); Spacer(Modifier.width(10.dp)); ChipRow((1..10).map { "${it}年" }, "${years}年") { setYears(it.dropLast(1).toInt()) } }
-            Spacer(Modifier.height(8.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) { Text("生成组数", color = Muted, fontSize = 13.sp); Spacer(Modifier.width(10.dp)); ChipRow((1..10).map { "${it}组" }, "${amount}组") { setAmount(it.dropLast(1).toInt()) } }
-            Spacer(Modifier.height(8.dp))
-            ChipRow(ModelOptions, mode, setMode)
-            Spacer(Modifier.height(10.dp))
-            Button(onClick = generate, modifier = Modifier.fillMaxWidth().height(40.dp), shape = RoundedCornerShape(10.dp)) { Text("✦  生成 $amount 组候选号码", fontWeight = FontWeight.Bold) }
-            if (quick.isNotEmpty()) {
-                Spacer(Modifier.height(8.dp))
-                Text("本次生成结果", color = Ink, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                quick.forEachIndexed { index, ticket ->
-                    Row(Modifier.fillMaxWidth().padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("%02d".format(index + 1), color = Green, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                        TicketNumbers(ticket, true)
-                    }
-                    Text("结构评分 ${ticket.score}", color = Muted, fontSize = 10.sp, modifier = Modifier.align(Alignment.End).padding(top = 4.dp))
-                }
-            }
-        }
-        CardBox {
-            Label("切换彩种")
-            ChipRow(LotteryGames.all.map { it.name }, game.name) { name -> setGame(LotteryGames.all.first { it.name == name }.code) }
-        }
-        CardBox {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text("主题颜色", color = Ink, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                Text(ThemePalette[themeIndex].first, color = Green, fontSize = 12.sp)
-            }
-            Row(Modifier.fillMaxWidth().padding(top = 12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                ThemePalette.forEachIndexed { index, (name, color) ->
-                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable { setTheme(index) }) {
-                        Box(Modifier.size(if (themeIndex == index) 29.dp else 25.dp).background(color, CircleShape)
-                            .then(if (themeIndex == index) Modifier.border(2.dp, color.copy(alpha = .42f), CircleShape) else Modifier), contentAlignment = Alignment.Center) {
-                            if (themeIndex == index) Text("✓", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                        }
-                        Text(name, color = Muted, fontSize = 9.sp, modifier = Modifier.padding(top = 4.dp))
-                    }
-                }
-            }
-        }
-        Text("彩票开奖结果具有随机性，统计与历史回测不代表未来中奖概率。", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
     }
 }
 
@@ -404,18 +546,7 @@ private fun MiniChart(values: List<Float>, color: Color) {
 }
 
 @Composable
-private fun SyncLine(syncing: Boolean, message: String, time: String, onSync: () -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.weight(1f)) {
-            Text(if (syncing) "同步中" else if (message.isNotBlank()) message else "官方数据 · ${if (time.isBlank()) "等待同步" else "更新于 $time"}", fontSize = 12.sp, color = if (message.startsWith("同步失败")) Red else Muted)
-            Text("来源：中国福利彩票发行管理中心", fontSize = 10.sp, color = Muted)
-        }
-        TextButton(onClick = onSync, enabled = !syncing) { Text(if (syncing) "…" else "立即更新") }
-    }
-}
-
-@Composable
-fun History(draws: List<Draw>, syncing: Boolean, message: String, time: String, onSync: () -> Unit, scroll: androidx.compose.foundation.ScrollState) {
+fun History(draws: List<Draw>, scroll: androidx.compose.foundation.ScrollState) {
     var filter by remember { mutableStateOf("最近30期") }
     var query by remember { mutableStateOf("") }
     var year by remember { mutableStateOf("全部年份") }
@@ -426,7 +557,6 @@ fun History(draws: List<Draw>, syncing: Boolean, message: String, time: String, 
     Column(Modifier.fillMaxSize().verticalScroll(scroll).padding(bottom = 16.dp)) {
         Header("历史数据", "${draws.size} 期 · 官方来源数据")
         CardBox {
-            SyncLine(syncing, message, time, onSync); Spacer(Modifier.height(8.dp))
             ChipRow(listOf("最近30期", "最近50期", "最近100期", "近1年", "近3年", "近5年"), filter) { filter = it }
             Spacer(Modifier.height(10.dp)); ChipRow(years, year) { year = it }
             Spacer(Modifier.height(10.dp))
@@ -443,11 +573,25 @@ fun History(draws: List<Draw>, syncing: Boolean, message: String, time: String, 
 }
 
 @Composable
-internal fun Smart(draws: List<Draw>, gameDraws: List<GameDraw>, years: Int, amount: Int, mode: String, game: LotteryGame, setYears: (Int) -> Unit, setAmount: (Int) -> Unit,
-                  setMode: (String) -> Unit, generate: () -> Unit, generateFiltered: (TicketFilters) -> Unit, tickets: List<Ticket>,
-                  apiKey: String, setApiKey: (String) -> Unit, modelId: String, setModelId: (String) -> Unit,
-                  saveAiConfig: (String, String) -> Unit, aiBusy: Boolean, aiMessage: String, aiReason: String,
-                  generateDoubao: (TicketFilters?) -> Unit) {
+internal fun Smart(
+    draws: List<Draw>,
+    gameDraws: List<GameDraw>,
+    years: Int,
+    amount: Int,
+    mode: String,
+    game: LotteryGame,
+    setYears: (Int) -> Unit,
+    setAmount: (Int) -> Unit,
+    setMode: (String) -> Unit,
+    generate: () -> Unit,
+    generateFiltered: (TicketFilters) -> Unit,
+    tickets: List<Ticket>,
+    aiBusy: Boolean,
+    aiMessage: String,
+    aiReason: String,
+    generateDoubao: (TicketFilters?) -> Unit,
+    onOpenSettings: () -> Unit
+) {
     var custom by remember { mutableStateOf(false) }
     var generatePressed by remember { mutableStateOf(false) }
     val minPossibleSum = if (game.digits) 0 else game.frontCount * (game.frontCount + 1) / 2
@@ -457,37 +601,11 @@ internal fun Smart(draws: List<Draw>, gameDraws: List<GameDraw>, years: Int, amo
     var oddChoice by remember { mutableStateOf("1–5") }
     var bigChoice by remember { mutableStateOf("1–5") }
     var maxRunsChoice by remember { mutableStateOf("最多2组") }
-    val ssqResult = remember(draws, mode, years, game.code) { if (game.code == "ssq") LotteryEngine.backtest(draws, mode, years) else null }
-    val otherResult = remember(gameDraws, mode, years, game.code) { if (game.code != "ssq") LotteryEngine.backtestGame(gameDraws, game, mode, years) else null }
+
     PageScroll {
-        Header("智能选号", "${game.name} · 多模型评分 · 自定义筛选")
-        CardBox {
-            Label("豆包大模型选号")
-            Text("豆包会根据本地历史频率、近期走势和候选号码池进行筛选。请填写已在火山方舟账号开通的模型 ID，或已创建的推理接入点 ID（Endpoint ID）。首次调用可能产生方舟费用。", color = Muted, fontSize = 12.sp)
-            OutlinedTextField(value = modelId, onValueChange = setModelId, label = { Text("模型 ID / Endpoint ID") }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 6.dp))
-            OutlinedTextField(value = apiKey, onValueChange = setApiKey, label = { Text("火山方舟 API Key") }, singleLine = true,
-                visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
-            Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.End) {
-                TextButton(onClick = { saveAiConfig(apiKey.trim(), modelId.trim()) }, enabled = !aiBusy) { Text("加密保存配置") }
-            }
-            Button(onClick = { generateDoubao(if (custom) currentFilters(sumMin, sumMax, minPossibleSum, maxPossibleSum, oddChoice, bigChoice, maxRunsChoice) else null) },
-                enabled = !aiBusy, modifier = Modifier.fillMaxWidth().height(38.dp), shape = RoundedCornerShape(10.dp)) {
-                Text(if (aiBusy) "豆包正在分析…" else "✦  豆包 AI 分析并生成 $amount 组")
-            }
-            if (aiMessage.isNotBlank()) Text(aiMessage, color = if (aiMessage.startsWith("豆包选号失败")) Red else Green, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
-            if (aiReason.isNotBlank()) Text("模型分析：$aiReason", color = Ink, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
-            Text("密钥使用 Android Keystore 加密保存在本机，不写入项目源码。", color = Muted, fontSize = 10.sp, modifier = Modifier.padding(top = 8.dp))
-        }
-        if (tickets.isNotEmpty()) CardBox {
-            Label("本次候选 · ${tickets.size} 组")
-            tickets.forEachIndexed { index, ticket ->
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    Text("第 ${index + 1} 组", color = Ink, fontWeight = FontWeight.Bold); Text("结构评分 ${ticket.score}", color = Green, fontSize = 12.sp)
-                }
-                Spacer(Modifier.height(10.dp)); TicketNumbers(ticket, true)
-                if (index < tickets.lastIndex) HorizontalDivider(Modifier.padding(vertical = 8.dp), color = Color(0xFFEFF2EF))
-            }
-        }
+        Header("智能选号", "${game.name} · 多模型评分 · 自定义筛选", onOpenSettings = onOpenSettings)
+
+        // 选号设置卡片
         CardBox {
             Label("选号设置与自定义筛选")
             Text("策略", color = Muted, fontSize = 12.sp); Spacer(Modifier.height(5.dp)); ChipRow(ModelOptions, mode, setMode)
@@ -509,23 +627,73 @@ internal fun Smart(draws: List<Draw>, gameDraws: List<GameDraw>, years: Int, amo
                 Text("连续号上限", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp, bottom = 4.dp))
                 ChipRow(listOf("不限", "最多1组", "最多2组"), maxRunsChoice) { maxRunsChoice = it }
             }
-            Spacer(Modifier.height(10.dp))
-            Button(onClick = {
-                generatePressed = true
-                if (custom) {
-                    val min = sumMin.toIntOrNull()?.coerceIn(minPossibleSum, maxPossibleSum) ?: minPossibleSum
-                    val max = (sumMax.toIntOrNull() ?: maxPossibleSum).coerceIn(min, maxPossibleSum)
-                    fun range(choice: String) = when (choice) { "1–5" -> 1..5; "2–4" -> 2..4; "3个" -> 3..3; else -> 0..6 }
-                    val maxRuns = when (maxRunsChoice) { "最多1组" -> 1; "最多2组" -> 2; else -> 5 }
-                    generateFiltered(TicketFilters(min..max, range(oddChoice), range(bigChoice), maxRuns))
-                } else generate()
-            },
-                modifier = Modifier.fillMaxWidth().height(40.dp), shape = RoundedCornerShape(10.dp)) { Text("生成 $amount 组候选", fontWeight = FontWeight.Bold) }
-            if (generatePressed && tickets.isEmpty()) Text("当前条件没有找到组合，请放宽和值、比例或连号限制。", color = Red, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
+
+            Spacer(Modifier.height(12.dp))
+
+            // 按钮重构：普通生成 + 豆包 AI 分析在一行
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                OutlinedButton(
+                    onClick = {
+                        generatePressed = true
+                        if (custom) {
+                            val min = sumMin.toIntOrNull()?.coerceIn(minPossibleSum, maxPossibleSum) ?: minPossibleSum
+                            val max = (sumMax.toIntOrNull() ?: maxPossibleSum).coerceIn(min, maxPossibleSum)
+                            fun range(choice: String) = when (choice) { "1–5" -> 1..5; "2–4" -> 2..4; "3个" -> 3..3; else -> 0..6 }
+                            val maxRuns = when (maxRunsChoice) { "最多1组" -> 1; "最多2组" -> 2; else -> 5 }
+                            generateFiltered(TicketFilters(min..max, range(oddChoice), range(bigChoice), maxRuns))
+                        } else generate()
+                    },
+                    modifier = Modifier.weight(1f).height(40.dp),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Text("普通生成 $amount 组", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+
+                Button(
+                    onClick = {
+                        generatePressed = true
+                        generateDoubao(if (custom) currentFilters(sumMin, sumMax, minPossibleSum, maxPossibleSum, oddChoice, bigChoice, maxRunsChoice) else null)
+                    },
+                    enabled = !aiBusy,
+                    modifier = Modifier.weight(1.2f).height(40.dp),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Text(if (aiBusy) "分析中…" else "✦ 豆包 AI 分析生成", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+
+            // 按钮下方的分析说明与状态
+            if (aiBusy) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth().padding(top = 10.dp).height(4.dp), color = Green)
+            }
+            if (aiMessage.isNotBlank()) {
+                Text(aiMessage, color = if (aiMessage.startsWith("豆包选号失败")) Red else Green, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
+            }
+            if (aiReason.isNotBlank()) {
+                Box(Modifier.fillMaxWidth().padding(top = 8.dp).background(Color(0xFFF3F7F4), RoundedCornerShape(8.dp)).padding(10.dp)) {
+                    Text("🤖 豆包 AI 分析说明：\n$aiReason", color = Ink, fontSize = 12.sp)
+                }
+            }
+
+            if (generatePressed && tickets.isEmpty() && !aiBusy) Text("当前条件没有找到组合，请放宽和值、比例或连号限制。", color = Red, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
             if (tickets.isNotEmpty() && tickets.size < amount) Text("符合条件的组合只有 ${tickets.size} 组，可放宽筛选条件。", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
         }
+
+        // 显示本次选中的候选列表
+        if (tickets.isNotEmpty()) CardBox {
+            Label("本次候选 · ${tickets.size} 组")
+            tickets.forEachIndexed { index, ticket ->
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Text("第 ${index + 1} 组", color = Ink, fontWeight = FontWeight.Bold); Text("结构评分 ${ticket.score}", color = Green, fontSize = 12.sp)
+                }
+                Spacer(Modifier.height(10.dp)); TicketNumbers(ticket, true)
+                if (index < tickets.lastIndex) HorizontalDivider(Modifier.padding(vertical = 8.dp), color = Color(0xFFEFF2EF))
+            }
+        }
+
+        // 综合评分权重说明
         CardBox {
-            Label("综合评分权重")
+            Label("综合评分权重说明")
             listOf("历史频率" to 26, "遗漏平衡" to 16, "和值结构" to 19, "奇偶与跨度" to 17, "蓝球频率" to 12, "连号结构" to 10).forEach { (name, weight) ->
                 Row(Modifier.fillMaxWidth().padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(name, color = Ink, fontSize = 12.sp, modifier = Modifier.width(92.dp))
@@ -533,27 +701,7 @@ internal fun Smart(draws: List<Draw>, gameDraws: List<GameDraw>, years: Int, amo
                     Text(" $weight%", color = Muted, fontSize = 11.sp, modifier = Modifier.width(43.dp))
                 }
             }
-            Text("AI 集成采用本地多因子集成评分，不依赖网络大模型或已训练模型。所有策略仅总结历史特征，不代表中奖概率。", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 8.dp))
-        }
-        if (ssqResult != null) {
-            CardBox {
-                Label("${game.name}历史回测 · 最近 ${ssqResult.draws} 期")
-                Text("红球命中 ${ssqResult.redHits} 次 · 蓝球命中 ${ssqResult.blueHits} 次", color = Ink, fontSize = 14.sp)
-                Text("每期平均命中 ${"%.2f".format(ssqResult.meanHits)} 个号码", color = Green, fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp))
-                Text("命中分布：0 个 ${ssqResult.hit0}期 · 1 个 ${ssqResult.hit1}期 · 2 个 ${ssqResult.hit2}期 · 3 个及以上 ${ssqResult.hit3Plus}期", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
-                Text("逐期向前滚动验证，仅使用当期之前的历史数据。", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 8.dp))
-            }
-        } else if (otherResult != null && otherResult.draws > 0) {
-            CardBox {
-                Label("${game.name}历史回测 · 最近 ${otherResult.draws} 期")
-                Text(if (game.digits) "位置号码累计命中 ${otherResult.frontHits} 位" else "前区累计命中 ${otherResult.frontHits} 个 · 后区累计命中 ${otherResult.backHits} 个", color = Ink, fontSize = 14.sp)
-                Text("每期开奖平均命中 ${"%.2f".format(otherResult.meanHits)} 个", color = Green, fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp))
-                Text("完全命中 ${otherResult.exactHits} 期", color = Ink, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
-                Text("命中分布：${otherResult.hitDistribution.toSortedMap().entries.joinToString(" · ") { "${it.key}个 ${it.value}期" }}", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
-                Text("按期滚动验证，只用目标期之前的数据；数字型彩票按位置命中统计。", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 8.dp))
-            }
-        } else {
-            CardBox { Label("${game.name}历史回测"); Text("本地历史开奖数据不足，请先在历史数据页同步。", color = Muted, fontSize = 12.sp) }
+            Text("AI 集成采用本地多因子集成评分，不依赖网络大模型。豆包 AI 分析在此基础上结合火山方舟云端进行结构抽样比对。所有策略仅总结历史特征，不代表中奖概率。", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 8.dp))
         }
     }
 }
@@ -591,14 +739,3 @@ private fun formatCountdown(seconds: Long): String {
     val secs = safe % 60
     return "%02d天 %02d:%02d:%02d".format(days, hours, minutes, secs)
 }
-
-private fun drawCalendar(latestDate: String): Pair<String, String> {
-    if (latestDate.isBlank()) return "" to "待同步"
-    return runCatching {
-        val date = LocalDate.parse(latestDate, DateTimeFormatter.ISO_LOCAL_DATE)
-        val next = (1..7).map { date.plusDays(it.toLong()) }.first { it.dayOfWeek.value in listOf(2, 4, 7) }
-        date.toString() to next.format(DateTimeFormatter.ofPattern("M月d日"))
-    }.getOrDefault(latestDate to "以官网公告为准")
-}
-
-

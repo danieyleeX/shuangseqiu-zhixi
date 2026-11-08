@@ -26,3 +26,14 @@ data class BacktestResult(val draws: Int, val redHits: Int, val blueHits: Int, v
 data class GameBacktestResult(val draws: Int, val frontHits: Int, val backHits: Int, val exactHits: Int, val hitDistribution: Map<Int, Int>) {
     val meanHits: Double get() = if (draws == 0) 0.0 else (frontHits + backHits).toDouble() / draws
 }
+
+data class GeneratedRecord(
+    val id: Long = 0,
+    val gameCode: String,
+    val issue: String,
+    val timestamp: String,
+    val mode: String,
+    val filterSummary: String,
+    val tickets: List<Ticket>
+)
+
