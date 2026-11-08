@@ -35,3 +35,13 @@
 
 
 
+
+## 代码结构
+
+- `data/local`：SQLite 数据库及本地开奖记录读写。
+- `data/remote`：官方开奖同步、后台同步任务和豆包方舟 API 客户端。
+- `domain/model`：彩种、开奖、号码组合和回测结果等业务模型。
+- `domain/engine`：统计分析、候选生成与历史回测算法。
+- `presentation`：Activity、应用状态容器和 Compose 页面；`LotteryScreens.kt` 集中页面组件，`MainActivity.kt` 管理导航、状态和依赖连接。
+
+豆包 API 返回 `ModelNotOpen`（HTTP 404）表示该火山方舟账号尚未开通配置的模型，不是应用 API 地址错误。请先在方舟控制台开通模型服务；如账号要求使用推理接入点，则将已创建的 Endpoint ID 填入“模型 ID / Endpoint ID”字段。

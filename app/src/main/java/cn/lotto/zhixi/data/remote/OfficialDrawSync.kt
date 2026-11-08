@@ -1,4 +1,8 @@
-package cn.lotto.zhixi
+package cn.lotto.zhixi.data.remote
+
+import cn.lotto.zhixi.data.local.LotteryDatabase
+import cn.lotto.zhixi.domain.engine.LotteryEngine
+import cn.lotto.zhixi.domain.model.*
 
 import android.content.Context
 import androidx.work.Constraints
@@ -103,3 +107,4 @@ fun scheduleDrawSync(context: Context) {
         .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()).build()
     WorkManager.getInstance(context).enqueueUniquePeriodicWork("official-multi-lottery-sync", ExistingPeriodicWorkPolicy.KEEP, request)
 }
+

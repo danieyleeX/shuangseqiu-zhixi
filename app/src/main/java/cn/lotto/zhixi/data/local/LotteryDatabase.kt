@@ -1,12 +1,13 @@
-package cn.lotto.zhixi
+package cn.lotto.zhixi.data.local
+
+import cn.lotto.zhixi.domain.model.Draw
+import cn.lotto.zhixi.domain.model.GameDraw
 
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import org.json.JSONArray
 import java.util.zip.GZIPInputStream
-
-data class GameDraw(val gameCode: String, val issue: String, val date: String, val front: List<Int>, val back: List<Int> = emptyList())
 
 class LotteryDatabase(context: Context) : SQLiteOpenHelper(context, "shuangseqiu.db", null, 2) {
     override fun onCreate(db: SQLiteDatabase) {
@@ -88,6 +89,7 @@ class LotteryDatabase(context: Context) : SQLiteOpenHelper(context, "shuangseqiu
         return out
     }
 }
+
 
 
 
