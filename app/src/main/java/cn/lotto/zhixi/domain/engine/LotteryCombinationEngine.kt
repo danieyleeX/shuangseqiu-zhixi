@@ -1,8 +1,9 @@
+
 package cn.lotto.zhixi.domain.engine
 
 import cn.lotto.zhixi.domain.model.*
-import kotlin.math.log2
-import kotlin.math.max
+import android.util.Log
+import kotlin.math.ln
 import kotlin.random.Random
 
 data class DetailedBacktestReport(
@@ -13,7 +14,7 @@ data class DetailedBacktestReport(
     val meanHitsPerDraw: Double,
     val blueHitRate: Double,
     val atLeastOneBlueHitRate: Double,
-    val hitDistribution: Map<String, Int>, // e.g. "0个号" -> count
+    val hitDistribution: Map<String, Int>,
     val brierScore: Double,
     val logLoss: Double,
     val vsRandomDiff: Double
@@ -22,7 +23,16 @@ data class DetailedBacktestReport(
 object LotteryCombinationEngine {
 
     /**
-     * 生成双色球候选组合（彻底修复蓝球固定 04 偏差）
+     * 生成双色球候选组合。
+     *
+     * candidatePoolMultiplier 真正参与候选池生成。
+     *
+     * 蓝球：
+     * INDEPENDENT：每组独立均匀随机。
+     * COVERAGE：每批随机洗牌，尽量均匀覆盖16个号码。
+     *
+     * 最终候选排序只依据红球评分。
+     * 蓝球历史频率和模型评分不参与候选筛选。
      */
     fun generateSSQTickets(
         draws: List<Draw>,
@@ -37,55 +47,188 @@ object LotteryCombinationEngine {
         candidatePoolMultiplier: Int = 6,
         seed: Long = System.nanoTime()
     ): List<Ticket> {
-        require(count in 1..10)
-        val data = windowDraws(draws, years)
-        val rng = Random(seed)
 
-        // 1. 蓝球引擎平滑概率估计
-        val blueStats = BlueBallEngine.analyzeBlueBalls(data, years, lambda = 0.25)
-        // 采样得出的本批次蓝球列表
-        val sampledBlues = BlueBallEngine.sampleMultiBlue(rng, blueStats, count, blueMode)
-
-        val resultTickets = mutableListOf<Ticket>()
-        val seenKeys = mutableSetOf<String>()
-
-        for (i in 0 until count) {
-            val targetBlue = sampledBlues[i]
-            var attempts = 0
-            var chosenTicket: Ticket? = null
-
-            while (attempts++ < 800) {
-                val reds = RedBallEngine.sampleRedSet(rng, data, mode, sumRange, oddRange, bigRange, maxConsecutivePairs)
-                val key = reds.joinToString(",") + "+" + targetBlue
-                if (seenKeys.add(key)) {
-                    val redScore = RedBallEngine.scoreRedSet(data, reds)
-                    val blueStat = blueStats.firstOrNull { it.ball == targetBlue }
-                    val blueScore = blueStat?.modelScore ?: 50.0
-                    val totalScore = (redScore * 0.75 + blueScore * 0.25).toInt().coerceIn(10, 99)
-                    chosenTicket = Ticket(reds, targetBlue, totalScore, "ssq", listOf(targetBlue))
-                    break
-                }
-            }
-
-            if (chosenTicket == null) {
-                val reds = (1..33).shuffled(rng).take(6).sorted()
-                val redScore = RedBallEngine.scoreRedSet(data, reds)
-                val blueStat = blueStats.firstOrNull { it.ball == targetBlue }
-                val totalScore = (redScore * 0.75 + (blueStat?.modelScore ?: 50.0) * 0.25).toInt().coerceIn(10, 99)
-                chosenTicket = Ticket(reds, targetBlue, totalScore, "ssq", listOf(targetBlue))
-            }
-
-            resultTickets.add(chosenTicket)
+        require(count in 1..10) {
+            "双色球单次推荐数量必须在1到10之间"
         }
 
-        return resultTickets.sortedByDescending { it.score }
+        val safeYears = years.coerceAtLeast(1)
+        val safeMultiplier = candidatePoolMultiplier.coerceIn(1, 10000)
+
+        val targetPoolSize = (count.toLong() * safeMultiplier)
+            .coerceAtMost(10000L)
+            .toInt()
+
+        val data = windowDraws(draws, safeYears)
+        val rng = Random(seed)
+
+        // 蓝球统计仅保留给其他分析展示逻辑使用。
+        // 本函数的蓝球生成不依赖历史统计。
+        val sampledBlues = buildBlueCandidateSequence(
+            rng = rng,
+            count = targetPoolSize,
+            mode = blueMode
+        )
+
+        val candidates = mutableListOf<Ticket>()
+        val redScores = mutableMapOf<String, Double>()
+        val seenKeys = mutableSetOf<String>()
+
+        val maxAttempts = (targetPoolSize * 8)
+            .coerceAtMost(80000)
+
+        var attempts = 0
+
+        while (
+            candidates.size < targetPoolSize &&
+            attempts < maxAttempts
+        ) {
+            attempts++
+
+            // 只有成功生成并加入候选池后，才推进蓝球序列。
+            val blue = sampledBlues[candidates.size]
+
+            val reds = try {
+                RedBallEngine.sampleRedSet(
+                    rng = rng,
+                    draws = data,
+                    mode = mode,
+                    sumRange = sumRange,
+                    oddRange = oddRange,
+                    bigRange = bigRange,
+                    maxConsecutivePairs = maxConsecutivePairs
+                )
+            } catch (e: IllegalStateException) {
+                Log.w(
+                    "LOTTERY_BLUE_DIAG",
+                    "红球约束无法生成合法组合，停止候选生成",
+                    e
+                )
+                break
+            }
+
+            val key = reds.sorted().joinToString(",") + "+" + blue
+
+            if (!seenKeys.add(key)) {
+                continue
+            }
+
+            val redScore = RedBallEngine.scoreRedSet(
+                data,
+                reds
+            )
+
+            // 最终评分只使用红球评分。
+            // 蓝球不参与排序，避免历史模型影响蓝球选择。
+            val ticketScore = redScore
+                .toInt()
+                .coerceIn(10, 99)
+
+            val ticket = Ticket(
+                reds,
+                blue,
+                ticketScore,
+                "ssq",
+                listOf(blue)
+            )
+
+            candidates.add(ticket)
+            redScores[key] = redScore
+        }
+
+        // 统计候选池中各蓝球的出现次数。
+        val candidateDistribution = (1..16).joinToString(" | ") { ball ->
+            "$ball:${candidates.count { it.blue == ball }}"
+        }
+
+        Log.d(
+            "LOTTERY_BLUE_DIAG",
+            "候选生成完成：目标=$targetPoolSize，实际=${candidates.size}，尝试=$attempts"
+        )
+
+        Log.d(
+            "LOTTERY_BLUE_DIAG",
+            "均匀随机蓝球候选池分布：$candidateDistribution"
+        )
+
+        if (candidates.isEmpty()) {
+            return emptyList()
+        }
+
+        // 不按蓝球分组，不为任何蓝球单独保留最佳候选。
+        // 所有候选统一按红球评分排序。
+        // 分数相同的候选随机打乱，避免固定顺序偏差。
+        val selected = candidates
+            .shuffled(rng)
+            .sortedByDescending { ticket ->
+                val key = ticket.reds.sorted().joinToString(",") +
+                        "+" + ticket.blue
+
+                redScores[key] ?: Double.NEGATIVE_INFINITY
+            }
+            .take(count)
+
+        Log.d(
+            "LOTTERY_BLUE_DIAG",
+            "最终选中蓝球：${selected.joinToString { it.blue.toString() }}"
+        )
+
+        return selected
     }
 
     /**
-     * 为豆包 AI 构建蓝球多样化的候选池 (覆盖 01-16 所有蓝球)
+     * 构建候选池蓝球序列。
+     *
+     * COVERAGE：
+     * 每16个号码构成一批，每批独立随机洗牌。
+     * 不使用历史概率。
+     *
+     * INDEPENDENT：
+     * 每个候选独立均匀随机抽取。
+     */
+    private fun buildBlueCandidateSequence(
+        rng: Random,
+        count: Int,
+        mode: BlueBallMode
+    ): List<Int> {
+
+        if (count <= 0) {
+            return emptyList()
+        }
+
+        if (mode == BlueBallMode.INDEPENDENT) {
+            return List(count) {
+                rng.nextInt(1, 17)
+            }
+        }
+
+        val result = mutableListOf<Int>()
+
+        while (result.size < count) {
+
+            val batch = (1..16)
+                .shuffled(rng)
+                .take(minOf(16, count - result.size))
+
+            result.addAll(batch)
+        }
+
+        return result
+    }
+
+    /**
+     * 为豆包AI构建多样化候选池。
+     *
+     * SSQ：
+     * 蓝球独立均匀随机生成。
+     * 评分只使用红球评分。
+     *
+     * 非SSQ：
+     * 使用 LotteryEngine 的原有接口。
      */
     fun buildDiverseCandidatePoolForAI(
         draws: List<Draw>,
+        gameDraws: List<GameDraw>,
         game: LotteryGame,
         years: Int,
         mode: String,
@@ -96,42 +239,137 @@ object LotteryCombinationEngine {
         targetSize: Int = 30,
         seed: Long = System.nanoTime()
     ): List<Ticket> {
+
+        if (targetSize <= 0) {
+            return emptyList()
+        }
+
         if (game.code != "ssq") {
-            return LotteryEngine.generateForGame(
-                draws, targetSize, years, mode, game,
-                sumRange, oddRange, bigRange, maxConsecutivePairs, candidatePoolMultiplier = 1, seed = seed
+            return LotteryEngine.generateForGameFromGameDraws(
+                draws = gameDraws,
+                count = targetSize,
+                years = years,
+                mode = mode,
+                game = game,
+                sumRange = sumRange,
+                oddRange = oddRange,
+                bigRange = bigRange,
+                maxConsecutivePairs = maxConsecutivePairs,
+                candidatePoolMultiplier = 1,
+                seed = seed
             )
         }
 
-        val data = windowDraws(draws, years)
+        val safeTargetSize = targetSize.coerceAtMost(10000)
+
+        val data = windowDraws(
+            draws,
+            years.coerceAtLeast(1)
+        )
+
         val rng = Random(seed)
-        val blueStats = BlueBallEngine.analyzeBlueBalls(data, years, lambda = 0.25)
 
         val candidates = mutableListOf<Ticket>()
         val seenKeys = mutableSetOf<String>()
 
-        // 均衡循环每个蓝球 01-16 至少生成 1-2 组红球组合
-        var blueIndex = 1
+        val redScores = mutableMapOf<String, Double>()
+
         var attempts = 0
-        while (candidates.size < targetSize && attempts++ < 2500) {
-            val blue = ((blueIndex++) % 16) + 1
-            val reds = RedBallEngine.sampleRedSet(rng, data, mode, sumRange, oddRange, bigRange, maxConsecutivePairs)
-            val key = reds.joinToString(",") + "+" + blue
-            if (seenKeys.add(key)) {
-                val redScore = RedBallEngine.scoreRedSet(data, reds)
-                val blueScore = blueStats.firstOrNull { it.ball == blue }?.modelScore ?: 50.0
-                val score = (redScore * 0.75 + blueScore * 0.25).toInt().coerceIn(10, 99)
-                candidates.add(Ticket(reds, blue, score, "ssq", listOf(blue)))
+
+        val maxAttempts = (safeTargetSize * 10)
+            .coerceAtMost(100000)
+
+        while (
+            candidates.size < safeTargetSize &&
+            attempts < maxAttempts
+        ) {
+            attempts++
+
+            // 每组候选独立均匀随机生成蓝球。
+            val blue = rng.nextInt(1, 17)
+
+            val reds = try {
+                RedBallEngine.sampleRedSet(
+                    rng = rng,
+                    draws = data,
+                    mode = mode,
+                    sumRange = sumRange,
+                    oddRange = oddRange,
+                    bigRange = bigRange,
+                    maxConsecutivePairs = maxConsecutivePairs
+                )
+            } catch (e: IllegalStateException) {
+                Log.w(
+                    "LOTTERY_BLUE_DIAG",
+                    "AI候选池红球约束无法生成合法组合",
+                    e
+                )
+                break
             }
+
+            val key = reds.sorted().joinToString(",") + "+" + blue
+
+            if (!seenKeys.add(key)) {
+                continue
+            }
+
+            val redScore = RedBallEngine.scoreRedSet(
+                data,
+                reds
+            )
+
+            // AI候选池评分也不再使用蓝球模型评分。
+            val score = redScore
+                .toInt()
+                .coerceIn(10, 99)
+
+            candidates.add(
+                Ticket(
+                    reds,
+                    blue,
+                    score,
+                    "ssq",
+                    listOf(blue)
+                )
+            )
+
+            redScores[key] = redScore
         }
 
-        // 打乱后部分排序，保留多蓝球覆盖
-        return candidates.shuffled(rng).take(targetSize)
+        // 不再按蓝球号码轮流排列，也不按蓝球分组。
+        // 只按红球评分排序，平分时随机打乱。
+        val result = candidates
+            .shuffled(rng)
+            .sortedByDescending { ticket ->
+                val key = ticket.reds.sorted().joinToString(",") +
+                        "+" + ticket.blue
+
+                redScores[key] ?: Double.NEGATIVE_INFINITY
+            }
+            .take(safeTargetSize)
+
+        val distribution = (1..16).joinToString(" | ") { ball ->
+            "$ball:${result.count { it.blue == ball }}"
+        }
+
+        Log.d(
+            "LOTTERY_BLUE_DIAG",
+            "AI候选池完成：目标=$safeTargetSize，实际=${result.size}，尝试=$attempts"
+        )
+
+        Log.d(
+            "LOTTERY_BLUE_DIAG",
+            "AI候选池均匀随机蓝球分布：$distribution"
+        )
+
+        return result
     }
 
     /**
-     * 针对主页“本期推荐号码”，执行 1000 次蒙特卡洛算法采样仿真计算，
-     * 从 1000 次生成中选出综合结构得分最高的最佳候选号码。
+     * 首页最优候选号码。
+     *
+     * SSQ 使用双色球 Draw 历史数据。
+     * 非 SSQ 使用对应彩种的 GameDraw 历史数据。
      */
     fun findOptimalMonteCarloCandidate(
         draws: List<Draw>,
@@ -140,65 +378,202 @@ object LotteryCombinationEngine {
         runs: Int = 1000,
         seed: Long = System.nanoTime()
     ): Ticket {
+
+        val safeRuns = runs.coerceIn(1, 10000)
+
         if (game.code != "ssq") {
-            return LotteryEngine.generateForGame(
-                draws, 1, 1, "AI集成", game, candidatePoolMultiplier = runs, seed = seed
-            ).firstOrNull() ?: Ticket(List(game.frontCount) { it + 1 }, 1, 80, game.code)
+            return LotteryEngine.generateForGameFromGameDraws(
+                draws = gameDraws,
+                count = 1,
+                years = 1,
+                mode = "AI集成",
+                game = game,
+                candidatePoolMultiplier = safeRuns,
+                seed = seed
+            ).firstOrNull()
+                ?: throw IllegalStateException(
+                    "Monte Carlo 未能为 ${game.name} 生成有效候选号码，请检查该彩种的历史数据"
+                )
         }
 
         val pool = generateSSQTickets(
-            draws, count = 1, years = 1, mode = "AI集成",
-            blueMode = BlueBallMode.COVERAGE, candidatePoolMultiplier = runs, seed = seed
+            draws = draws,
+            count = 1,
+            years = 1,
+            mode = "AI集成",
+            blueMode = BlueBallMode.INDEPENDENT,
+            candidatePoolMultiplier = safeRuns,
+            seed = seed
         )
-        return pool.firstOrNull() ?: Ticket(listOf(1, 2, 3, 4, 5, 6), 1, 80, "ssq")
+
+        return pool.firstOrNull()
+            ?: throw IllegalStateException(
+                "Monte Carlo 未能生成有效双色球候选号码，请检查历史数据和红球约束"
+            )
     }
 
     /**
-     * 严格 Walk-Forward 滚动历史回测 (无未来数据介入)
+     * 严格 Walk-Forward 滚动历史回测。
+     *
+     * 每一期预测只能使用该期开奖之前的数据。
+     *
+     * 当前蓝球生成已经统一为均匀随机，
+     * 因此所有策略的蓝球预测概率均为1/16。
      */
     fun runWalkForwardBacktest(
         draws: List<Draw>,
         strategyName: String,
         testDrawsCount: Int = 50
     ): DetailedBacktestReport {
-        if (draws.size < 20) {
-            return DetailedBacktestReport(strategyName, 0, 0, 0, 0.0, 0.0, 0.0, emptyMap(), 0.0, 0.0, 0.0)
+
+        if (draws.size < 20 || testDrawsCount <= 0) {
+            return DetailedBacktestReport(
+                strategyName,
+                0,
+                0,
+                0,
+                0.0,
+                0.0,
+                0.0,
+                emptyMap(),
+                0.0,
+                0.0,
+                0.0
+            )
         }
 
+        // 按期号从旧到新排序。
         val sorted = draws.sortedBy { it.issue }
-        val startIndex = (sorted.size - testDrawsCount).coerceAtLeast(15)
+
+        val startIndex = (
+                sorted.size - testDrawsCount
+                ).coerceAtLeast(15)
+
         val testSize = sorted.size - startIndex
+
+        if (testSize <= 0) {
+            return DetailedBacktestReport(
+                strategyName,
+                0,
+                0,
+                0,
+                0.0,
+                0.0,
+                0.0,
+                emptyMap(),
+                0.0,
+                0.0,
+                0.0
+            )
+        }
 
         var totalRedHits = 0
         var totalBlueHits = 0
-        val dist = mutableMapOf("0个号" to 0, "1个号" to 0, "2个号" to 0, "3个号" to 0, "4个号及以上" to 0)
+
+        val dist = mutableMapOf(
+            "0个号" to 0,
+            "1个号" to 0,
+            "2个号" to 0,
+            "3个号" to 0,
+            "4个号及以上" to 0
+        )
 
         var sumBrier = 0.0
         var sumLogLoss = 0.0
 
         for (i in startIndex until sorted.size) {
-            val historyBefore = sorted.take(i).sortedByDescending { it.issue }
+
+            // 只取当前开奖之前的历史数据。
+            val historyBefore = sorted
+                .take(i)
+                .sortedByDescending { it.issue }
+
             val actual = sorted[i]
 
-            // 单期向前滚动算法预测
-            val predicted = when (strategyName) {
-                "完全均匀随机" -> {
-                    val rng = Random(actual.issue.hashCode().toLong() + i)
-                    Ticket((1..33).shuffled(rng).take(6).sorted(), rng.nextInt(1, 17), 50, "ssq")
-                }
-                "历史频率" -> generateSSQTickets(historyBefore, 1, 3, "热号优先", BlueBallMode.INDEPENDENT, seed = i.toLong()).first()
-                "贝叶斯平滑" -> generateSSQTickets(historyBefore, 1, 3, "均衡型", BlueBallMode.INDEPENDENT, seed = i.toLong()).first()
-                "近期趋势" -> generateSSQTickets(historyBefore, 1, 1, "近期趋势", BlueBallMode.INDEPENDENT, seed = i.toLong()).first()
-                else -> generateSSQTickets(historyBefore, 1, 1, "AI集成", BlueBallMode.INDEPENDENT, seed = i.toLong()).first()
+            if (
+                actual.blue !in 1..16 ||
+                actual.reds.size != 6 ||
+                actual.reds.any { it !in 1..33 } ||
+                actual.reds.distinct().size != 6
+            ) {
+                continue
             }
 
-            val rHits = predicted.reds.intersect(actual.reds.toSet()).size
-            val bHit = if (predicted.blue == actual.blue) 1 else 0
+            val rng = Random(
+                actual.issue.hashCode().toLong() + i
+            )
+
+            // 蓝球概率固定为均匀分布。
+            // 所有策略都使用相同的蓝球概率基准。
+            val blueProbabilities = DoubleArray(17)
+
+            for (ball in 1..16) {
+                blueProbabilities[ball] = 1.0 / 16.0
+            }
+
+            // 生成当前期预测。
+            val predicted = if (
+                strategyName == "完全均匀随机"
+            ) {
+
+                Ticket(
+                    (1..33)
+                        .shuffled(rng)
+                        .take(6)
+                        .sorted(),
+                    rng.nextInt(1, 17),
+                    50,
+                    "ssq"
+                )
+
+            } else {
+
+                val years = when (strategyName) {
+                    "历史频率", "贝叶斯平滑" -> 3
+                    "近期趋势" -> 1
+                    else -> 1
+                }
+
+                val candidate = try {
+                    generateSSQTickets(
+                        draws = historyBefore,
+                        count = 1,
+                        years = years,
+                        mode = when (strategyName) {
+                            "历史频率" -> "热号优先"
+                            "贝叶斯平滑" -> "均衡型"
+                            "近期趋势" -> "近期趋势"
+                            else -> "AI集成"
+                        },
+                        blueMode = BlueBallMode.INDEPENDENT,
+                        candidatePoolMultiplier = 1,
+                        seed = i.toLong()
+                    ).firstOrNull()
+                } catch (e: IllegalStateException) {
+                    null
+                }
+
+                // 模型无法生成合法候选时跳过该期。
+                if (candidate == null) {
+                    continue
+                }
+
+                candidate
+            }
+
+            val rHits = predicted.reds
+                .intersect(actual.reds.toSet())
+                .size
+
+            val bHit = if (
+                predicted.blue == actual.blue
+            ) 1 else 0
 
             totalRedHits += rHits
             totalBlueHits += bHit
 
             val totalHits = rHits + bHit
+
             val key = when (totalHits) {
                 0 -> "0个号"
                 1 -> "1个号"
@@ -206,39 +581,115 @@ object LotteryCombinationEngine {
                 3 -> "3个号"
                 else -> "4个号及以上"
             }
+
             dist[key] = (dist[key] ?: 0) + 1
 
-            // 计算 Log Loss 与 Brier Score 评估概率预警误差
-            val pBlueActual = if (bHit == 1) 1.0 else 0.0
-            val pPredicted = 1.0 / 16.0
-            sumBrier += (pPredicted - pBlueActual) * (pPredicted - pBlueActual)
-            sumLogLoss += -log2(if (bHit == 1) pPredicted else (1.0 - pPredicted))
+            // 计算16分类Brier Score。
+            var brier = 0.0
+
+            for (ball in 1..16) {
+                val actualValue = if (
+                    ball == actual.blue
+                ) {
+                    1.0
+                } else {
+                    0.0
+                }
+
+                val difference =
+                    blueProbabilities[ball] - actualValue
+
+                brier += difference * difference
+            }
+
+            sumBrier += brier
+
+            // 计算实际蓝球的负对数似然。
+            val actualProbability = blueProbabilities[
+                actual.blue
+            ].coerceIn(1e-12, 1.0)
+
+            sumLogLoss += -ln(actualProbability)
         }
 
-        val meanHits = if (testSize == 0) 0.0 else (totalRedHits + totalBlueHits).toDouble() / testSize
-        val blueRate = if (testSize == 0) 0.0 else totalBlueHits.toDouble() / testSize
-        val randomBaselineHits = (6.0 / 33.0 * 6.0) + (1.0 / 16.0) // 约 1.15 个号
-        val vsRandomDiff = meanHits - randomBaselineHits
+        // 只统计实际成功生成预测的有效测试期数。
+        val actualTestSize = dist.values.sum()
+
+        val meanHits =
+            if (actualTestSize == 0) {
+                0.0
+            } else {
+                (totalRedHits + totalBlueHits).toDouble() /
+                        actualTestSize
+            }
+
+        val blueRate =
+            if (actualTestSize == 0) {
+                0.0
+            } else {
+                totalBlueHits.toDouble() / actualTestSize
+            }
+
+        // 双色球理论随机期望：
+        // 红球：6 * 6 / 33
+        // 蓝球：1 / 16
+        val randomBaselineHits =
+            (6.0 * 6.0 / 33.0) + (1.0 / 16.0)
+
+        val vsRandomDiff =
+            meanHits - randomBaselineHits
 
         return DetailedBacktestReport(
             strategyName = strategyName,
-            drawsTested = testSize,
+            drawsTested = actualTestSize,
             totalRedHits = totalRedHits,
             totalBlueHits = totalBlueHits,
             meanHitsPerDraw = meanHits,
             blueHitRate = blueRate,
             atLeastOneBlueHitRate = blueRate,
             hitDistribution = dist,
-            brierScore = if (testSize == 0) 0.0 else sumBrier / testSize,
-            logLoss = if (testSize == 0) 0.0 else sumLogLoss / testSize,
+            brierScore = if (actualTestSize == 0) {
+                0.0
+            } else {
+                sumBrier / actualTestSize
+            },
+            logLoss = if (actualTestSize == 0) {
+                0.0
+            } else {
+                sumLogLoss / actualTestSize
+            },
             vsRandomDiff = vsRandomDiff
         )
     }
 
-    private fun windowDraws(draws: List<Draw>, years: Int): List<Draw> {
-        if (draws.isEmpty()) return emptyList()
-        val latestYear = draws.first().date.take(4).toIntOrNull() ?: return draws.take(years * 156)
-        val cutoff = latestYear - years + 1
-        return draws.filter { (it.date.take(4).toIntOrNull() ?: 0) >= cutoff }
+    /**
+     * 按年份筛选开奖数据。
+     * 假设 draws 最新一期在前。
+     */
+    private fun windowDraws(
+        draws: List<Draw>,
+        years: Int
+    ): List<Draw> {
+
+        if (draws.isEmpty()) {
+            return emptyList()
+        }
+
+        val safeYears = years.coerceAtLeast(1)
+
+        val latestYear = draws.first()
+            .date.take(4)
+            .toIntOrNull()
+            ?: return draws.take(safeYears * 156)
+
+        val cutoff = latestYear - safeYears + 1
+
+        return draws.filter { draw ->
+            val year = draw.date
+                .take(4)
+                .toIntOrNull()
+
+            year != null && year >= cutoff
+        }
     }
 }

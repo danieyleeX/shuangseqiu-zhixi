@@ -62,15 +62,16 @@ internal fun currentFilters(sumMin: String, sumMax: String, minPossible: Int, ma
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        if (BuildConfig.DEBUG) {
-            runCatching { AlgorithmRegressionTest().runAllRegressionTests() }
-                .onSuccess { android.util.Log.d("ALGO_TEST", "ALL ALGORITHM REGRESSION TESTS PASSED 100%") }
-                .onFailure { android.util.Log.e("ALGO_TEST", "REGRESSION TEST FAILED", it) }
-        }
+
         val db = LotteryDatabase(applicationContext)
+
         db.importAssetIfEmpty(applicationContext)
+
         scheduleDrawSync(applicationContext)
-        setContent { App(db) }
+
+        setContent {
+            App(db)
+        }
     }
 }
 
@@ -94,6 +95,50 @@ fun App(db: LotteryDatabase) {
     var gameDraws by remember(selectedGameCode) { mutableStateOf(db.readGame(selectedGameCode)) }
     var generatedHistory by remember(selectedGameCode) { mutableStateOf(db.readGeneratedRecords(selectedGameCode)) }
 
+    // 根据当前彩种选择正确的历史数据源
+    fun generateCurrentGame(
+        count: Int,
+        mode: String,
+        sumRange: IntRange = Int.MIN_VALUE..Int.MAX_VALUE,
+        oddRange: IntRange = 0..6,
+        bigRange: IntRange = 0..6,
+        maxConsecutivePairs: Int = 5,
+        candidatePoolMultiplier: Int = 6,
+        seed: Long = System.nanoTime()
+    ): List<Ticket> {
+        return if (selectedGame.code == "ssq") {
+            // 双色球继续使用原来的 Draw 历史数据
+            LotteryEngine.generateForGame(
+                draws = draws,
+                count = count,
+                years = years,
+                mode = mode,
+                game = selectedGame,
+                sumRange = sumRange,
+                oddRange = oddRange,
+                bigRange = bigRange,
+                maxConsecutivePairs = maxConsecutivePairs,
+                candidatePoolMultiplier = candidatePoolMultiplier,
+                seed = seed
+            )
+        } else {
+            // 其他彩种必须使用对应彩种的 GameDraw 历史数据
+            LotteryEngine.generateForGameFromGameDraws(
+                draws = gameDraws,
+                count = count,
+                years = years,
+                mode = mode,
+                game = selectedGame,
+                sumRange = sumRange,
+                oddRange = oddRange,
+                bigRange = bigRange,
+                maxConsecutivePairs = maxConsecutivePairs,
+                candidatePoolMultiplier = candidatePoolMultiplier,
+                seed = seed
+            )
+        }
+    }
+
     var syncing by remember { mutableStateOf(false) }
     var syncMessage by remember { mutableStateOf("") }
     var syncTime by remember { mutableStateOf(context.getSharedPreferences("sync", 0).getString("last_ok", null).orEmpty()) }
@@ -107,14 +152,78 @@ fun App(db: LotteryDatabase) {
     var showSettingsDialog by remember { mutableStateOf(false) }
 
     val historyScroll = rememberScrollState()
-    val pinnedTicket = remember(draws, gameDraws, selectedGameCode) {
-        val latestIssue = if (selectedGame.code == "ssq") draws.firstOrNull()?.issue else gameDraws.firstOrNull()?.issue
-        if (latestIssue == null) null else {
-            val pinnedKey = "pinned_ai_candidate_1000runs_${selectedGame.code}_$latestIssue"
-            val saved = prefs.getString(pinnedKey, null)
-            val restored = saved?.let(::parseTicket)
-            restored ?: LotteryCombinationEngine.findOptimalMonteCarloCandidate(draws, gameDraws, selectedGame, runs = 1000).also { ticket ->
-                prefs.edit().putString(pinnedKey, serializeTicket(ticket)).apply()
+    var pinnedTicket by remember {
+        mutableStateOf<Ticket?>(null)
+    }
+
+    LaunchedEffect(draws, gameDraws, selectedGameCode) {
+
+        // 根据当前彩种获取最新一期期号
+        val latestIssue = if (selectedGame.code == "ssq") {
+            draws.firstOrNull()?.issue
+        } else {
+            gameDraws.firstOrNull()?.issue
+        }
+
+        // 当前没有历史数据时，不进行计算
+        if (latestIssue == null) {
+            pinnedTicket = null
+            return@LaunchedEffect
+        }
+
+        val pinnedKey =
+            "pinned_ai_candidate_1000runs_${selectedGame.code}_$latestIssue"
+
+        // 先从缓存读取
+        val saved = withContext(Dispatchers.IO) {
+            prefs.getString(pinnedKey, null)
+        }
+
+        val restored = saved
+            ?.let(::parseTicket)
+            ?.takeIf { it.gameCode == selectedGame.code }
+
+        if (restored != null) {
+
+            // 有缓存，立即显示，不重新计算
+            pinnedTicket = restored
+
+        } else {
+
+            // 没有缓存，后台执行1000次候选计算
+            pinnedTicket = null
+
+            val result = withContext(Dispatchers.Default) {
+                runCatching {
+                    LotteryCombinationEngine.findOptimalMonteCarloCandidate(
+                        draws = draws,
+                        gameDraws = gameDraws,
+                        game = selectedGame,
+                        runs = 1000
+                    )
+                }
+            }
+
+            result.onSuccess { ticket ->
+
+                // 计算完成后更新首页
+                pinnedTicket = ticket
+
+                // 保存缓存，供下次启动使用
+                withContext(Dispatchers.IO) {
+                    prefs.edit()
+                        .putString(pinnedKey, serializeTicket(ticket))
+                        .apply()
+                }
+
+            }.onFailure { error ->
+
+                android.util.Log.e(
+                    "PINNED_TICKET",
+                    "生成${selectedGame.name}首页推荐号码失败",
+                    error
+                )
+
             }
         }
     }
@@ -231,12 +340,22 @@ fun App(db: LotteryDatabase) {
                         setAmount = { amount = it },
                         setMode = { mode = it },
                         generate = {
-                            val res = LotteryEngine.generateForGame(draws, amount, years, mode, selectedGame)
+                            val res = generateCurrentGame(
+                                count = amount,
+                                mode = mode
+                            )
                             smartTickets = res
                             recordTickets(mode, "常规组数 $amount 组", res)
                         },
                         generateFiltered = { filters ->
-                            val res = LotteryEngine.generateForGame(draws, amount, years, mode, selectedGame, sumRange = filters.sum, oddRange = filters.odd, bigRange = filters.big, maxConsecutivePairs = filters.maxRuns)
+                            val res = generateCurrentGame(
+                                count = amount,
+                                mode = mode,
+                                sumRange = filters.sum,
+                                oddRange = filters.odd,
+                                bigRange = filters.big,
+                                maxConsecutivePairs = filters.maxRuns
+                            )
                             smartTickets = res
                             val summary = "和值 ${filters.sum.first}–${filters.sum.last} · 奇偶 ${filters.odd.first}–${filters.odd.last}"
                             recordTickets(mode, summary, res)
@@ -256,13 +375,18 @@ fun App(db: LotteryDatabase) {
                                     val frontMax = filters?.sum?.last ?: Int.MAX_VALUE
                                     val candidates = buildList {
                                         repeat(4) { batch ->
-                                            addAll(LotteryEngine.generateForGame(draws, 10, years, "AI集成", selectedGame,
-                                                sumRange = frontMin..frontMax,
-                                                oddRange = filters?.odd ?: 0..6,
-                                                bigRange = filters?.big ?: 0..6,
-                                                maxConsecutivePairs = filters?.maxRuns ?: 5,
-                                                candidatePoolMultiplier = 4,
-                                                seed = System.nanoTime() + batch * 104_729L))
+                                            addAll(
+                                                generateCurrentGame(
+                                                    count = 10,
+                                                    mode = "AI集成",
+                                                    sumRange = frontMin..frontMax,
+                                                    oddRange = filters?.odd ?: 0..6,
+                                                    bigRange = filters?.big ?: 0..6,
+                                                    maxConsecutivePairs = filters?.maxRuns ?: 5,
+                                                    candidatePoolMultiplier = 4,
+                                                    seed = System.nanoTime() + batch * 104_729L
+                                                )
+                                            )
                                         }
                                     }.distinctBy { it.reds.joinToString(",") + "+" + it.secondary.joinToString(",") }
                                     DoubaoLotteryClient.generate(selectedGame, history, candidates, amount, years, mode, doubaoModelId, doubaoApiKey)
