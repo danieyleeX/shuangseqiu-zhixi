@@ -8,6 +8,7 @@ import cn.lotto.zhixi.data.remote.DoubaoLotteryClient
 import cn.lotto.zhixi.data.remote.OfficialDrawSync
 import cn.lotto.zhixi.data.remote.scheduleDrawSync
 import cn.lotto.zhixi.domain.engine.AlgorithmRegressionTest
+import cn.lotto.zhixi.domain.engine.LotteryCombinationEngine
 import cn.lotto.zhixi.domain.engine.LotteryEngine
 import cn.lotto.zhixi.domain.model.*
 
@@ -109,10 +110,10 @@ fun App(db: LotteryDatabase) {
     val pinnedTicket = remember(draws, gameDraws, selectedGameCode) {
         val latestIssue = if (selectedGame.code == "ssq") draws.firstOrNull()?.issue else gameDraws.firstOrNull()?.issue
         if (latestIssue == null) null else {
-            val pinnedKey = "pinned_ai_candidate_${selectedGame.code}_$latestIssue"
+            val pinnedKey = "pinned_ai_candidate_1000runs_${selectedGame.code}_$latestIssue"
             val saved = prefs.getString(pinnedKey, null)
             val restored = saved?.let(::parseTicket)
-            restored ?: LotteryEngine.generateForGame(draws, 1, 1, "AI集成", selectedGame, candidatePoolMultiplier = 250).first().also { ticket ->
+            restored ?: LotteryCombinationEngine.findOptimalMonteCarloCandidate(draws, gameDraws, selectedGame, runs = 1000).also { ticket ->
                 prefs.edit().putString(pinnedKey, serializeTicket(ticket)).apply()
             }
         }

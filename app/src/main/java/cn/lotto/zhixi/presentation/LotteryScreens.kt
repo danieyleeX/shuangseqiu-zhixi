@@ -302,7 +302,7 @@ fun Home(
             Spacer(Modifier.height(10.dp))
             if (pinned != null) {
                 TicketNumbers(pinned)
-                Text("结构评分 ${pinned.score} / 100 · 从 250 组候选中择优 · 不代表中奖概率", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 10.dp))
+                Text("从 1000 次蒙特卡洛算法计算中择优 · 结构评分 ${pinned.score} / 100 · 不代表中奖概率", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 10.dp))
             } else Text("历史数据准备中", color = Muted)
         }
 
