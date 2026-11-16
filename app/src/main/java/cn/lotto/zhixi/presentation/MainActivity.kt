@@ -7,6 +7,7 @@ import cn.lotto.zhixi.data.remote.DoubaoKeyVault
 import cn.lotto.zhixi.data.remote.DoubaoLotteryClient
 import cn.lotto.zhixi.data.remote.OfficialDrawSync
 import cn.lotto.zhixi.data.remote.scheduleDrawSync
+import cn.lotto.zhixi.domain.engine.AlgorithmRegressionTest
 import cn.lotto.zhixi.domain.engine.LotteryEngine
 import cn.lotto.zhixi.domain.model.*
 
@@ -60,6 +61,11 @@ internal fun currentFilters(sumMin: String, sumMax: String, minPossible: Int, ma
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (BuildConfig.DEBUG) {
+            runCatching { AlgorithmRegressionTest().runAllRegressionTests() }
+                .onSuccess { android.util.Log.d("ALGO_TEST", "ALL ALGORITHM REGRESSION TESTS PASSED 100%") }
+                .onFailure { android.util.Log.e("ALGO_TEST", "REGRESSION TEST FAILED", it) }
+        }
         val db = LotteryDatabase(applicationContext)
         db.importAssetIfEmpty(applicationContext)
         scheduleDrawSync(applicationContext)
