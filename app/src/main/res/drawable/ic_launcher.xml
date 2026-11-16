@@ -3,16 +3,46 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <path android:fillColor="#B9163A" android:pathData="M0,0h108v108h-108z" />
-    <path android:fillColor="#F04455" android:pathData="M54,5a49,49 0,1 0,0.1 0z" />
-    <path android:fillColor="#FFE5B5" android:pathData="M38,35C28,18 43,15 49,34Z M59,34C65,15 81,18 70,36Z" />
-    <path android:fillColor="#FFFFFF" android:pathData="M54,28C71,28 84,41 84,58C84,75 71,88 54,88C37,88 24,75 24,58C24,41 37,28 54,28Z" />
-    <path android:fillColor="#FFEFCB" android:pathData="M54,33C68,33 79,44 79,58C79,72 68,83 54,83C40,83 29,72 29,58C29,44 40,33 54,33Z" />
-    <path android:fillColor="#FFC94F" android:pathData="M44,31C45,20 60,17 66,27C60,26 53,30 49,36Z" />
-    <path android:fillColor="#8F1734" android:pathData="M42,51C42,48 44,46 46,46C48,46 50,48 50,51C50,54 48,56 46,56C44,56 42,54 42,51Z M58,51C58,48 60,46 62,46C64,46 66,48 66,51C66,54 64,56 62,56C60,56 58,54 58,51Z" />
-    <path android:fillColor="#00000000" android:strokeColor="#8F1734" android:strokeWidth="2.5" android:strokeLineCap="round" android:pathData="M45,64C49,70 59,70 63,64" />
-    <path android:fillColor="#FF9BA8" android:pathData="M34,59C34,56 37,55 40,56C43,57 43,61 40,62C37,63 34,62 34,59Z M68,59C68,56 71,55 74,56C77,57 77,61 74,62C71,63 68,62 68,59Z" />
-    <path android:fillColor="#FFD15D" android:pathData="M25,82C25,78 29,75 33,77C37,79 37,85 33,87C29,89 25,86 25,82Z" />
-    <path android:fillColor="#FFFFFF" android:pathData="M46,86C46,82 50,79 54,81C58,83 58,89 54,91C50,93 46,90 46,86Z" />
-    <path android:fillColor="#FFC94F" android:pathData="M67,82C67,78 71,75 75,77C79,79 79,85 75,87C71,89 67,86 67,82Z" />
+    <!-- Background Circle -->
+    <path android:fillColor="#FF6B8B" android:pathData="M0,0h108v108h-108z" />
+    <path android:fillColor="#FF85A1" android:pathData="M54,6a48,48 0,1 0,0.1 0z" />
+
+    <!-- Cat Outer Ears -->
+    <path android:fillColor="#FFFFFF" android:pathData="M24,42 C20,20 38,18 45,36 Z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M84,42 C88,20 70,18 63,36 Z" />
+
+    <!-- Inner Ears Pink -->
+    <path android:fillColor="#FFB3C6" android:pathData="M27,39 C24,25 35,23 41,35 Z" />
+    <path android:fillColor="#FFB3C6" android:pathData="M81,39 C84,25 73,23 67,35 Z" />
+
+    <!-- Cat Head Base (Fluffy Circle) -->
+    <path android:fillColor="#FFFFFF" android:pathData="M54,32 C74,32 88,46 88,65 C88,84 74,94 54,94 C34,94 20,84 20,65 C20,46 34,32 54,32 Z" />
+
+    <!-- Rosy Blushing Cheeks -->
+    <path android:fillColor="#FFC2D1" android:pathData="M28,68 A7,6 0,1 0,42,68 A7,6 0,1 0,28,68 Z" />
+    <path android:fillColor="#FFC2D1" android:pathData="M66,68 A7,6 0,1 0,80,68 A7,6 0,1 0,66,68 Z" />
+
+    <!-- Big Cute Eyes -->
+    <path android:fillColor="#2B2D42" android:pathData="M37,56 A6,8 0,1 0,49,56 A6,8 0,1 0,37,56 Z" />
+    <path android:fillColor="#2B2D42" android:pathData="M59,56 A6,8 0,1 0,71,56 A6,8 0,1 0,59,56 Z" />
+
+    <!-- Eye Sparkles (White Reflection Dots) -->
+    <path android:fillColor="#FFFFFF" android:pathData="M44,53 A2.5,2.5 0,1 0,49,53 A2.5,2.5 0,1 0,44,53 Z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M66,53 A2.5,2.5 0,1 0,71,53 A2.5,2.5 0,1 0,66,53 Z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M40,58 A1.2,1.2 0,1 0,42.4,58 A1.2,1.2 0,1 0,40,58 Z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M62,58 A1.2,1.2 0,1 0,64.4,58 A1.2,1.2 0,1 0,62,58 Z" />
+
+    <!-- Cute Heart/Triangle Nose -->
+    <path android:fillColor="#FF5C8A" android:pathData="M54,64 L50,60 C49,59 51,57 54,58 C57,57 59,59 58,60 Z" />
+
+    <!-- Mouth Lines -->
+    <path android:fillColor="#00000000" android:strokeColor="#2B2D42" android:strokeWidth="2" android:strokeLineCap="round" android:pathData="M48,67 C51,70 54,67 54,64 C54,67 57,70 60,67" />
+
+    <!-- Cute Whiskers -->
+    <path android:fillColor="#00000000" android:strokeColor="#FF85A1" android:strokeWidth="2" android:strokeLineCap="round" android:pathData="M18,60 L32,63 M16,68 L31,68 M19,75 L32,73" />
+    <path android:fillColor="#00000000" android:strokeColor="#FF85A1" android:strokeWidth="2" android:strokeLineCap="round" android:pathData="M90,60 L76,63 M92,68 L77,68 M89,75 L76,73" />
+
+    <!-- Tiny Paw or Bell Detail at Bottom -->
+    <path android:fillColor="#FFD166" android:pathData="M54,85 A5,5 0,1 0,54,95 A5,5 0,1 0,54,85 Z" />
+    <path android:fillColor="#00000000" android:strokeColor="#E76F51" android:strokeWidth="1.5" android:pathData="M51,90 L57,90" />
 </vector>

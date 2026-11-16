@@ -1,7 +1,9 @@
 package cn.lotto.zhixi.data.remote
 
-import cn.lotto.zhixi.data.local.LotteryDatabase
-import cn.lotto.zhixi.domain.engine.LotteryEngine
+import cn.lotto.zhixi.domain.algorithm.doubao.DoubaoFallbackHandler
+import cn.lotto.zhixi.domain.algorithm.doubao.DoubaoPromptBuilder
+import cn.lotto.zhixi.domain.algorithm.doubao.DoubaoResponseParser
+import cn.lotto.zhixi.domain.algorithm.doubao.DoubaoResultValidator
 import cn.lotto.zhixi.domain.model.*
 
 import android.content.Context
@@ -80,34 +82,9 @@ object DoubaoLotteryClient {
         require(modelId.isNotBlank()) { "请填写豆包模型 ID 或推理接入点 Endpoint ID" }
         require(candidates.isNotEmpty()) { "本地候选号码为空" }
 
-        val cutoff = (history.firstOrNull()?.date?.take(4)?.toIntOrNull() ?: 0) - years + 1
-        val window = history.filter { (it.date.take(4).toIntOrNull() ?: 0) >= cutoff }
-        val frontFreq = IntArray(game.frontMax + 1)
-        val backFreq = IntArray(game.backMax + 1)
-        window.forEach { draw ->
-            draw.front.forEach { if (it in frontFreq.indices) frontFreq[it]++ }
-            draw.back.forEach { if (it in backFreq.indices) backFreq[it]++ }
-        }
-
-        val candidateJson = JSONArray().apply {
-            candidates.take(30).forEachIndexed { index, ticket ->
-                put(JSONObject()
-                    .put("id", index)
-                    .put("front", JSONArray(ticket.reds))
-                    .put("back", JSONArray(ticket.secondary))
-                    .put("local_score", ticket.score))
-            }
-        }
-
-        val stats = JSONObject()
-            .put("sample_group", game.name)
-            .put("sample_count", window.size)
-            .put("front_frequency", frequencyObject(frontFreq, game))
-            .put("back_frequency", frequencyObject(backFreq, game))
-            .put("strategy", strategy)
-            .put("candidate_pool", candidateJson)
-
-        val prompt = "请从给定的 candidate_pool 候选池中，精选 $count 组代表性编号 id，优先选择高分且分布均衡的组合。只能从 candidate_pool 中选择已有的 id，不能修改号码。严格只返回纯 JSON：{\"selected_ids\":[id0,id1...],\"reason\":\"说明\"}。数据：$stats"
+        val cutoffIssue = history.firstOrNull()?.issue.orEmpty()
+        val sysPrompt = DoubaoPromptBuilder.buildSystemPrompt()
+        val userPrompt = DoubaoPromptBuilder.buildUserPrompt(game, candidates, count, cutoffIssue, strategy)
 
         fun createRequestBody(disableThinking: Boolean) = JSONObject().apply {
             put("model", modelId)
@@ -118,8 +95,8 @@ object DoubaoLotteryClient {
                 put("thinking", JSONObject().put("type", "disabled"))
             }
             put("messages", JSONArray().apply {
-                put(JSONObject().put("role", "system").put("content", "你是一个只输出纯 JSON 的数据分析助手。你的任务是从候选池中挑选 $count 组最优质的候选 ID。必须严格输出合法 JSON：{\"selected_ids\":[0,1,2],\"reason\":\"说明\"}。严禁 Markdown 代码块，严禁任何额外文字。"))
-                put(JSONObject().put("role", "user").put("content", prompt))
+                put(JSONObject().put("role", "system").put("content", sysPrompt))
+                put(JSONObject().put("role", "user").put("content", userPrompt))
             })
         }
 
@@ -169,91 +146,23 @@ object DoubaoLotteryClient {
         }
 
         val rawContent = root.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")?.optString("content").orEmpty()
-        val cleanContent = rawContent.replace(Regex("(?s)<think>.*?</think>"), "").trim().ifBlank { rawContent.trim() }
-
         Log.d("DOUBAO_RAW", "rawContent: $rawContent")
-        Log.d("DOUBAO_RAW", "cleanContent: $cleanContent")
 
-        val parsedIds = extractCandidateIds(cleanContent)
-        val jsonObject = runCatching { JSONObject(parseJsonBlock(cleanContent)) }.getOrNull()
-        val reasonText = jsonObject?.optString("reason")?.ifBlank { null } ?: "已根据模型分析和本地候选池完成精选。"
+        val parsed = DoubaoResponseParser.parseResponse(rawContent)
+        val validTickets = DoubaoResultValidator.validateAndMapTickets(parsed.selectedIds, candidates, count, game)
 
-        val validIds = parsedIds.filter { it in candidates.indices }.distinct().take(count)
-
-        if (validIds.isEmpty()) {
-            val fallbackTickets = candidates.shuffled().take(count).map { it.copy(gameCode = game.code) }
-            val rawSummary = cleanContent.take(120).replace("\n", " ")
-            val fallbackReason = "【模型未返回有效编号，已自动随机挑选】 原始返回：${rawSummary.ifBlank { "模型响应空白" }}"
-            return DoubaoPickResult(fallbackTickets, fallbackReason)
+        if (validTickets.isEmpty()) {
+            return DoubaoFallbackHandler.createFallbackResult(
+                candidates = candidates,
+                draws = emptyList(),
+                count = count,
+                years = years,
+                mode = strategy,
+                game = game,
+                rawSummary = parsed.rawJsonText.ifBlank { rawContent }
+            )
         }
 
-        val output = validIds.map { candidates[it].copy(gameCode = game.code) }
-        return DoubaoPickResult(output, reasonText)
-    }
-
-    private fun extractCandidateIds(cleanContent: String): List<Int> {
-        val jsonText = parseJsonBlock(cleanContent)
-        val selected = runCatching { JSONObject(jsonText) }.getOrNull()
-
-        val keys = listOf("selected_ids", "selected_id", "selected_indices", "ids", "indexes", "candidates", "selected_candidates")
-        val ids = mutableListOf<Int>()
-
-        if (selected != null) {
-            for (key in keys) {
-                val array = selected.optJSONArray(key)
-                if (array != null) {
-                    for (i in 0 until array.length()) {
-                        val valInt = array.optInt(i, -1)
-                        if (valInt != -1) ids.add(valInt)
-                    }
-                    if (ids.isNotEmpty()) break
-                }
-                if (selected.has(key) && !selected.isNull(key)) {
-                    val singleInt = selected.optInt(key, -1)
-                    if (singleInt != -1) {
-                        ids.add(singleInt)
-                        break
-                    }
-                }
-            }
-        }
-
-        if (ids.isEmpty()) {
-            val keyPattern = Regex("\"(?:selected_ids|selected_id|selected_indices|ids|indexes|candidates|selected_candidates)\"\\s*:\\s*\\[([^]]+)\\]")
-            val match = keyPattern.find(cleanContent)
-            if (match != null) {
-                match.groupValues[1].split(',').forEach { numStr ->
-                    numStr.trim().toIntOrNull()?.let { ids.add(it) }
-                }
-            }
-        }
-
-        if (ids.isEmpty()) {
-            val arrayPattern = Regex("\\[([0-9,\\s]+)\\]")
-            val match = arrayPattern.find(cleanContent)
-            if (match != null) {
-                match.groupValues[1].split(',').forEach { numStr ->
-                    numStr.trim().toIntOrNull()?.let { ids.add(it) }
-                }
-            }
-        }
-
-        return ids.filter { it >= 0 }
-    }
-
-    private fun parseJsonBlock(text: String): String {
-        val blockMatch = Regex("(?s)```(?:json)?\\s*(\\{.*?\\})\\s*```").find(text)
-        if (blockMatch != null) return blockMatch.groupValues[1]
-        val start = text.indexOf('{')
-        val end = text.lastIndexOf('}')
-        if (start != -1 && end > start) {
-            return text.substring(start, end + 1)
-        }
-        return text
-    }
-
-    private fun frequencyObject(freq: IntArray, game: LotteryGame): JSONObject = JSONObject().apply {
-        val start = if (game.digits) 0 else 1
-        for (n in start until freq.size) put(n.toString(), freq[n])
+        return DoubaoPickResult(validTickets, parsed.reasonText)
     }
 }
